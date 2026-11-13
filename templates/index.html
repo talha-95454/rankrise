@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RankRise — ASO Studio</title>
+<meta name="description" content="RankRise — free ASO studio: Play Store competitor research, keyword extraction, AppKittie-format sheets and a character-perfect metadata counter.">
+<meta name="theme-color" content="#04070f">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -32,8 +37,16 @@
     <!-- DASHBOARD -->
     <section class="view active" id="view-dashboard">
       <div class="hero">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <span class="eyebrow light">ASO Studio · 100% Free · No API Keys</span>
         <h1>Welcome to <span>RankRise</span></h1>
         <p>Keyword research, competitor copy aur character-perfect metadata — tumhara poora ASO workflow, ek hi jagah, bilkul free.</p>
+        <div class="hero-chips">
+          <span class="chip">🔎 Competitor research</span>
+          <span class="chip">📊 Keyword extraction</span>
+          <span class="chip">⬇ AppKittie-format sheets</span>
+          <span class="chip">🔢 Character counter</span>
+        </div>
       </div>
       <div class="cards">
         <div class="stat-card"><div class="stat-num" id="stat-apps">0</div><div class="stat-label">Saved Apps</div></div>
@@ -60,6 +73,7 @@
     <!-- MY APPS -->
     <section class="view" id="view-apps">
       <div class="page-head">
+        <span class="eyebrow">Your library</span>
         <h1>My Apps</h1>
         <p>Save every app once — name, metadata and feature graphic. Open it any day and continue.</p>
       </div>
@@ -115,6 +129,7 @@
     <!-- RESEARCH -->
     <section class="view" id="view-research">
       <div class="page-head">
+        <span class="eyebrow">Discover keywords</span>
         <h1>Keyword Research</h1>
         <p>Fetches competitors from the Play Store, copies their titles &amp; descriptions, extracts every keyword.</p>
       </div>
@@ -183,6 +198,7 @@
     <!-- COUNTER -->
     <section class="view" id="view-counter">
       <div class="page-head">
+        <span class="eyebrow">Polish metadata</span>
         <h1>Character Counter</h1>
         <p>Write better metadata. Limits turn red the moment you cross them.</p>
       </div>
