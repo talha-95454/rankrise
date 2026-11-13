@@ -15,7 +15,6 @@ except Exception:
     UPLOADS = os.path.join(tempfile.gettempdir(), "rankrise_uploads")
     os.makedirs(UPLOADS, exist_ok=True)
 
-
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
 def now():
@@ -54,6 +53,19 @@ def extract_keywords(competitors, seed_text, my_text):
     """Local keyword extraction with estimate scores.
     Popularity/Difficulty here are LOCAL ESTIMATES from competitor behaviour,
     not data from any paid tool."""
+    # --- gap detection: is a keyword ABSENT from the owner's own metadata? ---
+    # my_text = the target app's own title + summary + description. When it is
+    # empty (pure seed mode) gap stays None - never fabricated.
+    my_norm = ""
+    if my_text and my_text.strip():
+        my_norm = " " + re.sub(r"\s+", " ", clean(my_text).replace("-", " ").replace("/", " ")) + " "
+
+    def is_gap(kw):
+        if not my_norm:
+            return None
+        k_norm = re.sub(r"\s+", " ", kw.replace(":", "").replace("-", " ").replace("/", " ")).strip()
+        return (" " + k_norm + " ") not in my_norm
+
     core = set()
     for t in (seed_text or "", my_text or ""):
         for tok in tokens(t):
@@ -127,7 +139,7 @@ def extract_keywords(competitors, seed_text, my_text):
         rows.append({
             "keyword": g, "popularity": popularity, "difficulty": difficulty,
             "apps_count": app_count, "in_titles": title_count, "mentions": s["mentions"],
-            "score": score, "suggested_use": use,
+            "score": score, "suggested_use": use, "gap": is_gap(g),
         })
     rows.sort(key=lambda r: (-r["popularity"], -r["in_titles"], -len(r["keyword"].split()), -r["mentions"]))
     return rows[:250]
@@ -138,36 +150,61 @@ def home():
     return send_from_directory("templates", "index.html")
 
 # ---------------- Competitor research ----------------
-@app.route("/api/research", methods=["POST"])
-def research():
-    d = request.get_json(force=True)
-    seed = (d.get("seed") or "").strip()
-    if not seed:
-        return jsonify({"error": "Seed keyword is required"}), 400
-    country = (d.get("country") or "US").strip().lower()
-    lang = (d.get("lang") or "en").strip()
-    n = int(d.get("count") or 20)
-    n = max(5, min(30, n))
-    my_text = d.get("my_text") or ""
-    extra_seeds = [s.strip() for s in (d.get("extra_seeds") or []) if s.strip()]
-    try:
-        from google_play_scraper import search as gp_search, app as gp_app
-    except Exception as e:
-        return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
-    seen, results = set(), []
-    for term in [seed] + extra_seeds:
-        try:
-            hits = gp_search(term, lang=lang, country=country, n_hits=n)
-        except Exception:
-            hits = []
-        for h in hits:
-            aid = h.get("appId")
-            if aid and aid not in seen:
-                seen.add(aid)
-                results.append(h)
+def normalize_title(t):
+    """Lowercase, drop year tokens and punctuation, collapse spaces - for title matching."""
+    t = YEAR_RE.sub(" ", (t or "").lower())
+    t = re.sub(r"[^a-z0-9]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+def title_similarity(a, b):
+    """0..1 similarity between two normalized titles (token overlap, containment bonus)."""
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    sa, sb = set(a.split()), set(b.split())
+    jacc = len(sa & sb) / max(1, len(sa | sb))
+    contain = 0.85 if (a in b or b in a) else 0.0
+    return max(jacc, contain)
+
+def derive_title_phrases(title):
+    """Build Play Store search phrases from an app title, year tokens stripped.
+    'Lie Detector Test - Prank 2026' -> ['lie detector test prank', 'lie detector test',
+    'lie detector prank', ...]."""
+    no_year = YEAR_RE.sub(" ", title or "")
+    segments = re.split(r"[-:|/–—]+", no_year)
+    seg_words = []
+    for seg in segments:
+        w = tokens(seg)
+        if w:
+            seg_words.append(w)
+    phrases = []
+    def add(words):
+        p = " ".join(words).strip()
+        if p and p not in phrases:
+            phrases.append(p)
+    all_words = [w for seg in seg_words for w in seg]
+    if len(all_words) >= 2:
+        add(all_words)
+    for w in seg_words:
+        if len(w) >= 2:
+            add(w)
+    if len(seg_words) >= 2:
+        first = seg_words[0]
+        for other in seg_words[1:]:
+            add(first + other)
+            add(first[:2] + other)
+            add(first[:3] + other)
+    if not phrases and all_words:
+        add(all_words)
+    return phrases
+
+def fetch_details(hits, lang, country, gp_app):
+    """Fetch full Play Store details for search hits -> competitor dicts."""
     competitors = []
-    for h in results[:n]:
+    for h in hits:
         try:
             det = gp_app(h["appId"], lang=lang, country=country)
         except Exception:
@@ -185,12 +222,158 @@ def research():
             "developer": det.get("developer") or "",
             "url": det.get("url") or f"https://play.google.com/store/apps/details?id={h.get('appId')}",
         })
+    return competitors
+
+def find_target_app(gp_search, app_name, phrases, lang, country):
+    """Find the owner's own app on the Play Store by title.
+    Exact normalized-title match wins; otherwise the closest title match.
+    Returns the search hit dict, or None if nothing plausible is found."""
+    name_n = normalize_title(app_name)
+    best, best_score = None, 0.0
+    seen = set()
+    for q in [app_name] + phrases[:2]:
+        try:
+            hits = gp_search(q, lang=lang, country=country, n_hits=30)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            t_n = normalize_title(h.get("title") or "")
+            if t_n == name_n:
+                return h
+            s = title_similarity(name_n, t_n)
+            if s > best_score:
+                best, best_score = h, s
+    return best if best_score >= 0.4 else None
+
+def title_relevance(comp_title, core_words, phrases):
+    """How strongly a competitor title matches the target app's title phrases."""
+    ct = clean(comp_title)
+    score = 0
+    for p in phrases:
+        if p and p in ct:
+            score += 10 + len(p.split())
+    score += 3 * len(set(tokens(ct)) & core_words)
+    return score
+
+def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app):
+    """Accuracy mode: find the owner's app, then research THAT app's own competitors."""
+    phrases = derive_title_phrases(app_name)
+    target_hit = find_target_app(gp_search, app_name, phrases, lang, country)
+    target_title = (target_hit or {}).get("title") or app_name
+    if target_hit:
+        phrases = derive_title_phrases(target_title) or phrases
+    target_id = (target_hit or {}).get("appId")
+    # The target app's OWN metadata (title + summary + description) from the
+    # Play Store - this is what gap keywords are measured against.
+    target_text = ""
+    if target_hit and target_id:
+        try:
+            det = gp_app(target_id, lang=lang, country=country)
+        except Exception:
+            det = None
+        src = det or target_hit
+        target_text = " ".join(x for x in [src.get("title") or "", src.get("summary") or "",
+                                           src.get("description") or ""] if x)
+    pool, seen = [], set()
+    if target_id:
+        seen.add(target_id)  # the owner's own app is never its own competitor
+    for p in phrases:
+        try:
+            hits = gp_search(p, lang=lang, country=country, n_hits=30)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if aid and aid not in seen:
+                seen.add(aid)
+                pool.append(h)
+    core_words = set(t for t in tokens(target_title) if t not in STOP)
+    pool.sort(key=lambda h: (-title_relevance(h.get("title") or "", core_words, phrases), -parse_installs(h)))
+    competitors = fetch_details(pool[:n], lang, country, gp_app)
+    if not competitors:
+        return jsonify({"error": "No competitor apps found. Check the app name / internet and try again."}), 404
+    seed_text = " ".join(x for x in [seed, target_title, " ".join(phrases), " ".join(extra_seeds)] if x)
+    own_text = target_text or my_text
+    keywords = extract_keywords(competitors, seed_text, own_text)
+    payload = {"seed": seed or target_title, "country": country.upper(), "created": now(),
+               "competitors": competitors, "keywords": keywords,
+               "target_text": own_text or "",
+               "target": {"title": target_title, "appId": target_id,
+                          "developer": (target_hit or {}).get("developer") or ""} if target_hit else None}
+    return jsonify(payload)
+
+@app.route("/api/research", methods=["POST"])
+def research():
+    d = request.get_json(force=True)
+    seed = (d.get("seed") or "").strip()
+    app_name = (d.get("app_name") or "").strip()
+    if not seed and not app_name:
+        return jsonify({"error": "Seed keyword is required"}), 400
+    country = (d.get("country") or "US").strip().lower()
+    lang = (d.get("lang") or "en").strip()
+    raw_count = d.get("count")
+    if raw_count is None:
+        n = 30 if app_name else 20  # app mode: bring back as many competitors as can be found
+    else:
+        try:
+            n = int(raw_count)
+        except Exception:
+            n = 20
+    n = max(5, min(50, n))
+    my_text = d.get("my_text") or ""
+    extra_seeds = [s.strip() for s in (d.get("extra_seeds") or []) if s.strip()]
+    try:
+        from google_play_scraper import search as gp_search, app as gp_app
+    except Exception as e:
+        return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
+    if app_name:
+        return research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app)
+
+    seen, results = set(), []
+    for term in [seed] + extra_seeds:
+        try:
+            hits = gp_search(term, lang=lang, country=country, n_hits=n)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if aid and aid not in seen:
+                seen.add(aid)
+                results.append(h)
+    competitors = fetch_details(results[:n], lang, country, gp_app)
     if not competitors:
         return jsonify({"error": "No competitor apps found. Check the seed keyword / internet and try again."}), 404
     keywords = extract_keywords(competitors, seed + " " + " ".join(extra_seeds), my_text)
     payload = {"seed": seed, "country": country.upper(), "created": now(),
                "competitors": competitors, "keywords": keywords}
     return jsonify(payload)
+
+# ---------------- Re-extract from a chosen competitor subset ----------------
+@app.route("/api/extract", methods=["POST"])
+def extract():
+    """Rebuild keywords from exactly the competitors the owner kept ticked.
+    Popularity/Difficulty stay the same LOCAL ESTIMATES as /api/research."""
+    d = request.get_json(force=True)
+    comps = []
+    for c in (d.get("competitors") or []):
+        if not isinstance(c, dict):
+            continue
+        comps.append({
+            "appId": c.get("appId") or c.get("title") or "",
+            "title": c.get("title") or "",
+            "summary": c.get("summary") or "",
+            "description": c.get("description") or "",
+            "installs": c.get("installs") or "",
+            "realInstalls": c.get("realInstalls") or 0,
+        })
+    if not comps:
+        return jsonify({"error": "No competitors provided"}), 400
+    keywords = extract_keywords(comps, d.get("seed") or "", d.get("my_text") or "")
+    return jsonify({"keywords": keywords})
 
 # ---------------- Sheets ----------------
 def sheet_rows(body):
