@@ -8,7 +8,13 @@ from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(BASE, "data")
 UPLOADS = os.path.join(DATA, "uploads")
-os.makedirs(UPLOADS, exist_ok=True)
+try:
+    os.makedirs(UPLOADS, exist_ok=True)
+except Exception:
+    import tempfile
+    UPLOADS = os.path.join(tempfile.gettempdir(), "rankrise_uploads")
+    os.makedirs(UPLOADS, exist_ok=True)
+
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
