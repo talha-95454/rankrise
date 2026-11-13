@@ -40,7 +40,7 @@
         <div class="hero-glow" aria-hidden="true"></div>
         <span class="eyebrow light">ASO Studio · 100% Free · No API Keys</span>
         <h1>Welcome to <span>RankRise</span></h1>
-        <p>Keyword research, competitor copy aur character-perfect metadata — tumhara poora ASO workflow, ek hi jagah, bilkul free.</p>
+        <p>Keyword research, competitor copy and character-perfect metadata — your complete ASO workflow, all in one place, completely free.</p>
         <div class="hero-chips">
           <span class="chip">🔎 Competitor research</span>
           <span class="chip">📊 Keyword extraction</span>
@@ -57,12 +57,12 @@
       <div class="panel">
         <h2>How it works</h2>
         <div class="step-cards">
-          <div class="step-card"><div class="step-num">1</div><h3>Save your app</h3><p>My Apps me app ki details aur feature graphic save karo — roz ka data hamesha ready.</p></div>
-          <div class="step-card"><div class="step-num">2</div><h3>Research keywords</h3><p>Tool Play Store se competitors la kar un ke keywords extract kar dega — koi copy-paste nahi.</p></div>
-          <div class="step-card"><div class="step-num">3</div><h3>Download final sheet</h3><p>Pasandeeda keywords tick karo, final sheet tumhare AppKittie format me download kar lo.</p></div>
-          <div class="step-card"><div class="step-num">4</div><h3>Polish metadata</h3><p>Character Counter me title, short aur long description limits ke andar perfect banao.</p></div>
+          <div class="step-card"><div class="step-num">1</div><h3>Save your app</h3><p>Save your app's details and feature graphic in My Apps — your daily data, always ready.</p></div>
+          <div class="step-card"><div class="step-num">2</div><h3>Research keywords</h3><p>The tool fetches competitors from the Play Store and extracts their keywords for you — no copy-paste needed.</p></div>
+          <div class="step-card"><div class="step-num">3</div><h3>Download final sheet</h3><p>Tick the keywords you like and download the final sheet in your AppKittie format.</p></div>
+          <div class="step-card"><div class="step-num">4</div><h3>Polish metadata</h3><p>Perfect your title, short description and long description within the limits in the Character Counter.</p></div>
         </div>
-        <p class="muted" style="margin-top:14px">Note: Popularity aur Difficulty is free tool me <b>local estimates</b> hain — asal competitor behaviour se hisaab kiye hue. Ye paid-tool data nahi hai.</p>
+        <p class="muted" style="margin-top:14px">Note: Popularity and Difficulty in this free tool are <b>local estimates</b> — calculated from real competitor behaviour. This is not paid-tool data.</p>
       </div>
       <div class="panel">
         <h2>Recent apps</h2>
@@ -154,7 +154,7 @@
             </label>
             <label>Competitor apps
               <select id="r-count">
-                <option>10</option><option selected>20</option><option>30</option>
+                <option>10</option><option selected>20</option><option>30</option><option>40</option><option>50</option>
               </select>
             </label>
           </div>
@@ -170,10 +170,12 @@
         <h2>Competitor apps <span class="badge" id="comp-count"></span></h2>
         <div class="btn-row">
           <button class="btn" id="dl-competitors">⬇ Download competitors sheet (CSV)</button>
+          <button class="btn primary" id="reextract">Re-extract keywords from selected</button>
           <span class="muted">Sheet has every competitor's title, short &amp; long description — ready to check.</span>
         </div>
+        <p class="muted">Every competitor is ticked by default. Untick any app that is not a true rival, then choose “Re-extract keywords from selected” to rebuild the keyword list from only the ticked apps.</p>
         <div class="table-wrap"><table id="comp-table">
-          <thead><tr><th>App</th><th>Title</th><th>Installs</th><th>Rating</th><th>Short description</th><th>Copy / View</th></tr></thead>
+          <thead><tr><th>✓</th><th>App</th><th>Title</th><th>Installs</th><th>Rating</th><th>Short description</th><th>Copy / View</th></tr></thead>
           <tbody></tbody>
         </table></div>
       </div>
@@ -182,13 +184,14 @@
         <h2>Extracted keywords <span class="badge" id="kw-count"></span></h2>
         <div class="btn-row">
           <input id="kw-search" type="text" placeholder="Filter keywords…">
+          <button class="btn" id="kw-gap-toggle">Gap keywords only</button>
           <button class="btn" id="dl-all">⬇ All keywords sheet (CSV)</button>
           <button class="btn primary" id="dl-final-csv">⬇ Final sheet — CSV (ticked keywords)</button>
           <button class="btn primary" id="dl-final-xlsx">⬇ Final sheet — Excel (ticked keywords)</button>
         </div>
-        <p class="muted">Top keywords are ticked automatically. Untick any you don't want, then download the final sheet and check it yourself.</p>
+        <p class="muted">Top keywords are ticked automatically. Untick any you don't want, then download the final sheet and check it yourself. Keywords tagged <b>GAP</b> are used by your competitors but are missing from your own app's title and descriptions — use “Gap keywords only” to view just those.</p>
         <div class="table-wrap"><table id="kw-table">
-          <thead><tr><th>✓</th><th>Keyword</th><th>Popularity *</th><th>Difficulty *</th><th>Apps Count</th><th>In Titles</th><th>Mentions</th><th>Suggested use</th></tr></thead>
+          <thead><tr><th>✓</th><th>Keyword</th><th>Gap</th><th>Popularity *</th><th>Difficulty *</th><th>Apps Count</th><th>In Titles</th><th>Mentions</th><th>Suggested use</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <p class="muted">* Local estimates from competitor data — free, not paid-tool data.</p>
