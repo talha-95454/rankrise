@@ -143,7 +143,7 @@ $("#save-app").onclick = () => {
     const item = Object.assign({}, existing || {}, data, { id, updated: stampNow() });
     if (graphic !== null) { item.graphic = graphic; item.graphic_info = info; }
     if (existing) APPS = APPS.map(x => x.id === id ? item : x); else APPS.unshift(item);
-    try { persistApps(); } catch (e) { alert("Browser storage full ho gaya hai - feature graphic chhoti/compress karke try karo"); return; }
+    try { persistApps(); } catch (e) { alert("Browser storage is full — please try a smaller or compressed feature graphic"); return; }
     $("#f-id").value = id;
     $("#graphic-preview").innerHTML = item.graphic ? `<img src="${item.graphic}"><div class="muted">${item.graphic_info || ""}</div>` : "";
     $("#save-msg").textContent = "Saved \u2713 " + (item.graphic_info || "");
@@ -176,14 +176,15 @@ $("#r-app").addEventListener("change", e => {
 });
 $("#run-research").onclick = async () => {
   const seed = $("#r-seed").value.trim();
-  if (!seed) { alert("Seed keyword likho pehle"); return; }
-  const extra = $("#r-extra").value.split(",").map(s => s.trim()).filter(Boolean);
   const my = RESEARCH_MY;
-  $("#research-status").textContent = "Fetching competitors from Play Store… (30–60 seconds lag sakte hain)";
+  const appName = my ? (my.name || "") : "";
+  if (!seed && !appName) { alert("Please enter a seed keyword first"); return; }
+  const extra = $("#r-extra").value.split(",").map(s => s.trim()).filter(Boolean);
+  $("#research-status").textContent = "Fetching competitors from Play Store… (this can take 30–60 seconds)";
   $("#run-research").disabled = true;
   try {
     RESEARCH = await api("/api/research", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed, extra_seeds: extra, country: $("#r-country").value, count: +$("#r-count").value,
+      body: JSON.stringify({ seed, app_name: appName, extra_seeds: extra, country: $("#r-country").value, count: +$("#r-count").value,
         my_text: my ? (my.title + " " + my.short_desc + " " + my.long_desc) : "" }) });
     $("#research-status").textContent = "Done ✓ — " + RESEARCH.competitors.length + " competitors, " + RESEARCH.keywords.length + " keywords";
     renderResearch();
@@ -199,39 +200,83 @@ function renderResearch() {
   $("#kw-panel").classList.remove("hidden");
   $("#comp-count").textContent = RESEARCH.competitors.length + " apps";
   const tb = $("#comp-table tbody"); tb.innerHTML = "";
-  RESEARCH.competitors.forEach(c => {
+  RESEARCH.competitors.forEach((c, idx) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td></td><td class="ct"></td><td>${c.installs || ""}</td><td>${c.score ? (+c.score).toFixed(1) : ""}</td><td class="cs"></td>
+    tr.innerHTML = `<td><input type="checkbox" class="comp-check" data-idx="${idx}" checked></td><td></td><td class="ct"></td><td>${c.installs || ""}</td><td>${c.score ? (+c.score).toFixed(1) : ""}</td><td class="cs"></td>
       <td><div class="btn-row" style="margin:0">
         <button class="btn small" data-c="title">Title</button>
         <button class="btn small" data-c="summary">Short</button>
         <button class="btn small" data-c="description">Long</button>
       </div></td>`;
-    const first = tr.children[0];
+    const first = tr.children[1];
     if (c.icon) { const img = document.createElement("img"); img.className = "icon"; img.src = c.icon; first.appendChild(img); }
     const link = document.createElement("a"); link.href = c.url; link.target = "_blank"; link.textContent = c.developer || c.appId; first.appendChild(link);
-    tr.querySelector(".ct").textContent = c.title || "";
+    const titleLink = document.createElement("a");
+    titleLink.href = c.url || ("https://play.google.com/store/apps/details?id=" + (c.appId || ""));
+    titleLink.target = "_blank"; titleLink.rel = "noopener";
+    titleLink.textContent = c.title || "";
+    tr.querySelector(".ct").appendChild(titleLink);
     tr.querySelector(".cs").textContent = c.summary || "";
     tr.querySelector('[data-c="title"]').onclick = () => copyText(c.title);
     tr.querySelector('[data-c="summary"]').onclick = () => copyText(c.summary);
     tr.querySelector('[data-c="description"]').onclick = () => openModal(c.title, c.description);
     tb.appendChild(tr);
   });
+  renderKeywords();
+}
+function renderKeywords() {
+  if (!RESEARCH) return;
   $("#kw-count").textContent = RESEARCH.keywords.length + " keywords";
   const kb = $("#kw-table tbody"); kb.innerHTML = "";
   RESEARCH.keywords.forEach((k, i) => {
     const tr = document.createElement("tr");
     tr.dataset.kw = k.keyword;
+    tr.dataset.gap = k.gap === true ? "1" : "0";
     tr.innerHTML = `<td><input type="checkbox" ${i < 60 ? "checked" : ""}></td><td class="kk"></td>
+      <td>${k.gap === true ? '<span class="badge">GAP</span>' : ""}</td>
       <td><b>${k.popularity}</b></td><td>${k.difficulty}</td><td>${k.apps_count}</td><td>${k.in_titles}</td><td>${k.mentions}</td><td>${k.suggested_use}</td>`;
     tr.querySelector(".kk").textContent = k.keyword;
     kb.appendChild(tr);
   });
+  applyKwFilters();
 }
-$("#kw-search").addEventListener("input", e => {
-  const q = e.target.value.toLowerCase();
-  $$("#kw-table tbody tr").forEach(tr => tr.style.display = tr.dataset.kw.includes(q) ? "" : "none");
-});
+$("#reextract").onclick = async () => {
+  if (!RESEARCH) return;
+  const selected = [];
+  $$("#comp-table .comp-check").forEach(cb => { if (cb.checked) selected.push(RESEARCH.competitors[+cb.dataset.idx]); });
+  if (!selected.length) { alert("Please tick at least one competitor app first"); return; }
+  const btn = $("#reextract");
+  btn.disabled = true;
+  $("#research-status").textContent = "Re-extracting keywords from " + selected.length + " selected competitors…";
+  try {
+    const my = RESEARCH_MY;
+    const data = await api("/api/extract", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ competitors: selected, country: RESEARCH.country, seed: RESEARCH.seed,
+        my_text: RESEARCH.target_text || (my ? (my.title + " " + my.short_desc + " " + my.long_desc) : "") }) });
+    RESEARCH.keywords = data.keywords || [];
+    renderKeywords();
+    updateStats();
+    $("#research-status").textContent = "Done ✓ — keywords rebuilt from " + selected.length + " selected competitors: " + RESEARCH.keywords.length + " keywords";
+  } catch (e) {
+    $("#research-status").textContent = "Error: " + e.message;
+  }
+  btn.disabled = false;
+};
+let KW_GAP_ONLY = false;
+function applyKwFilters() {
+  const q = $("#kw-search").value.toLowerCase();
+  $$("#kw-table tbody tr").forEach(tr => {
+    const okQ = tr.dataset.kw.includes(q);
+    const okG = !KW_GAP_ONLY || tr.dataset.gap === "1";
+    tr.style.display = (okQ && okG) ? "" : "none";
+  });
+}
+$("#kw-search").addEventListener("input", applyKwFilters);
+$("#kw-gap-toggle").onclick = () => {
+  KW_GAP_ONLY = !KW_GAP_ONLY;
+  $("#kw-gap-toggle").classList.toggle("primary", KW_GAP_ONLY);
+  applyKwFilters();
+};
 function tickedKeywords() {
   if (!RESEARCH) return [];
   const ticked = new Set();
@@ -257,7 +302,7 @@ $("#c-app").addEventListener("change", e => {
 });
 $$("[data-copy]").forEach(b => b.onclick = () => copyText(document.getElementById(b.dataset.copy).value));
 $("#c-save-back").onclick = () => {
-  if (!COUNTER_APP) { $("#c-msg").textContent = "Pehle upar se app select karo"; return; }
+  if (!COUNTER_APP) { $("#c-msg").textContent = "Please select an app above first"; return; }
   const a = APPS.find(x => x.id === COUNTER_APP.id);
   if (a) {
     a.title = $("#c-title").value; a.short_desc = $("#c-short").value; a.long_desc = $("#c-long").value;
