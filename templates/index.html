@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RankRise — ASO Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-badge">R</div>
+      <div>
+        <div class="brand-name">Rank<span>Rise</span></div>
+        <div class="brand-sub">ASO STUDIO</div>
+      </div>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="dashboard">🏠 Dashboard</button>
+      <button class="nav-btn" data-view="apps">📱 My Apps</button>
+      <button class="nav-btn" data-view="research">🔎 Keyword Research</button>
+      <button class="nav-btn" data-view="counter">🔢 Character Counter</button>
+    </nav>
+    <div class="side-note">
+      <strong>Free forever</strong><br>
+      No API keys. No credits. No cost. Saved apps stay in your own browser.
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- DASHBOARD -->
+    <section class="view active" id="view-dashboard">
+      <div class="hero">
+        <h1>Welcome to <span>RankRise</span></h1>
+        <p>Keyword research, competitor copy aur character-perfect metadata — tumhara poora ASO workflow, ek hi jagah, bilkul free.</p>
+      </div>
+      <div class="cards">
+        <div class="stat-card"><div class="stat-num" id="stat-apps">0</div><div class="stat-label">Saved Apps</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-comps">—</div><div class="stat-label">Competitors (last research)</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-kws">—</div><div class="stat-label">Keywords (last research)</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-seed">—</div><div class="stat-label">Last Seed Keyword</div></div>
+      </div>
+      <div class="panel">
+        <h2>How it works</h2>
+        <div class="step-cards">
+          <div class="step-card"><div class="step-num">1</div><h3>Save your app</h3><p>My Apps me app ki details aur feature graphic save karo — roz ka data hamesha ready.</p></div>
+          <div class="step-card"><div class="step-num">2</div><h3>Research keywords</h3><p>Tool Play Store se competitors la kar un ke keywords extract kar dega — koi copy-paste nahi.</p></div>
+          <div class="step-card"><div class="step-num">3</div><h3>Download final sheet</h3><p>Pasandeeda keywords tick karo, final sheet tumhare AppKittie format me download kar lo.</p></div>
+          <div class="step-card"><div class="step-num">4</div><h3>Polish metadata</h3><p>Character Counter me title, short aur long description limits ke andar perfect banao.</p></div>
+        </div>
+        <p class="muted" style="margin-top:14px">Note: Popularity aur Difficulty is free tool me <b>local estimates</b> hain — asal competitor behaviour se hisaab kiye hue. Ye paid-tool data nahi hai.</p>
+      </div>
+      <div class="panel">
+        <h2>Recent apps</h2>
+        <div id="dash-apps" class="app-grid"></div>
+      </div>
+    </section>
+
+    <!-- MY APPS -->
+    <section class="view" id="view-apps">
+      <div class="page-head">
+        <h1>My Apps</h1>
+        <p>Save every app once — name, metadata and feature graphic. Open it any day and continue.</p>
+      </div>
+      <div class="panel">
+        <h2 id="app-form-title">Add / edit app</h2>
+        <input type="hidden" id="f-id">
+        <div class="grid-2">
+          <label>App name *
+            <input id="f-name" type="text" placeholder="e.g. GPS Speedometer: Speed Tracker">
+          </label>
+          <label>Package name (optional)
+            <input id="f-package" type="text" placeholder="e.g. com.example.app">
+          </label>
+          <label>Main seed keyword
+            <input id="f-seed" type="text" placeholder="e.g. gps speedometer">
+          </label>
+          <label>Country
+            <select id="f-country">
+              <option>US</option><option>GB</option><option>PK</option><option>IN</option>
+              <option>CA</option><option>AU</option><option>DE</option><option>FR</option>
+              <option>BR</option><option>ID</option><option>BD</option><option>AE</option>
+            </select>
+          </label>
+        </div>
+        <label>Title <span class="hint">(Play Store limit: 30 characters)</span>
+          <input id="f-title" type="text" placeholder="App title">
+        </label>
+        <div class="count-row" data-for="f-title" data-limit="30"></div>
+        <label>Short description <span class="hint">(limit: 80 characters)</span>
+          <textarea id="f-short" rows="2" placeholder="Short description"></textarea>
+        </label>
+        <div class="count-row" data-for="f-short" data-limit="80"></div>
+        <label>Long description <span class="hint">(limit: 4000 characters)</span>
+          <textarea id="f-long" rows="8" placeholder="Long description"></textarea>
+        </label>
+        <div class="count-row" data-for="f-long" data-limit="4000"></div>
+        <label>Feature graphic <span class="hint">(Play Store size: 1024 × 500)</span>
+          <input id="f-graphic" type="file" accept="image/*">
+        </label>
+        <div id="graphic-preview"></div>
+        <div class="btn-row">
+          <button class="btn primary" id="save-app">💾 Save app</button>
+          <button class="btn" id="clear-form">Clear form</button>
+          <span class="muted" id="save-msg"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Saved apps</h2>
+        <div id="apps-list" class="app-grid"></div>
+      </div>
+    </section>
+
+    <!-- RESEARCH -->
+    <section class="view" id="view-research">
+      <div class="page-head">
+        <h1>Keyword Research</h1>
+        <p>Fetches competitors from the Play Store, copies their titles &amp; descriptions, extracts every keyword.</p>
+      </div>
+      <div class="panel">
+        <div class="grid-2">
+          <label>Use a saved app
+            <select id="r-app"><option value="">— manual —</option></select>
+          </label>
+          <label>Seed keyword *
+            <input id="r-seed" type="text" placeholder="e.g. gps speedometer">
+          </label>
+          <label>Extra seed keywords (comma separated, optional)
+            <input id="r-extra" type="text" placeholder="e.g. speed tracker, gps odometer">
+          </label>
+          <div class="grid-2">
+            <label>Country
+              <select id="r-country">
+                <option>US</option><option>GB</option><option>PK</option><option>IN</option>
+                <option>CA</option><option>AU</option><option>DE</option><option>FR</option>
+                <option>BR</option><option>ID</option><option>BD</option><option>AE</option>
+              </select>
+            </label>
+            <label>Competitor apps
+              <select id="r-count">
+                <option>10</option><option selected>20</option><option>30</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" id="run-research">🚀 Fetch competitors &amp; extract keywords</button>
+          <span class="muted" id="research-status"></span>
+        </div>
+        <p class="muted">Popularity / Difficulty = local estimates from competitor data (free). Final sheet format = Country, Keyword, Popularity, Difficulty, Apps Count — sorted by Popularity, high to low, just like your AppKittie sheet.</p>
+      </div>
+
+      <div class="panel hidden" id="comp-panel">
+        <h2>Competitor apps <span class="badge" id="comp-count"></span></h2>
+        <div class="btn-row">
+          <button class="btn" id="dl-competitors">⬇ Download competitors sheet (CSV)</button>
+          <span class="muted">Sheet has every competitor's title, short &amp; long description — ready to check.</span>
+        </div>
+        <div class="table-wrap"><table id="comp-table">
+          <thead><tr><th>App</th><th>Title</th><th>Installs</th><th>Rating</th><th>Short description</th><th>Copy / View</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
+      <div class="panel hidden" id="kw-panel">
+        <h2>Extracted keywords <span class="badge" id="kw-count"></span></h2>
+        <div class="btn-row">
+          <input id="kw-search" type="text" placeholder="Filter keywords…">
+          <button class="btn" id="dl-all">⬇ All keywords sheet (CSV)</button>
+          <button class="btn primary" id="dl-final-csv">⬇ Final sheet — CSV (ticked keywords)</button>
+          <button class="btn primary" id="dl-final-xlsx">⬇ Final sheet — Excel (ticked keywords)</button>
+        </div>
+        <p class="muted">Top keywords are ticked automatically. Untick any you don't want, then download the final sheet and check it yourself.</p>
+        <div class="table-wrap"><table id="kw-table">
+          <thead><tr><th>✓</th><th>Keyword</th><th>Popularity *</th><th>Difficulty *</th><th>Apps Count</th><th>In Titles</th><th>Mentions</th><th>Suggested use</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <p class="muted">* Local estimates from competitor data — free, not paid-tool data.</p>
+      </div>
+    </section>
+
+    <!-- COUNTER -->
+    <section class="view" id="view-counter">
+      <div class="page-head">
+        <h1>Character Counter</h1>
+        <p>Write better metadata. Limits turn red the moment you cross them.</p>
+      </div>
+      <div class="panel">
+        <label>Load from a saved app
+          <select id="c-app"><option value="">— choose app —</option></select>
+        </label>
+      </div>
+      <div class="panel limit-panel">
+        <div class="limit-head"><h2>Title</h2><span class="limit-badge" data-badge="c-title">0 / 30</span></div>
+        <input id="c-title" type="text" placeholder="Type your app title…">
+        <div class="bar"><div class="bar-fill" data-bar="c-title"></div></div>
+        <div class="count-row" data-for="c-title" data-limit="30"></div>
+      </div>
+      <div class="panel limit-panel">
+        <div class="limit-head"><h2>Short description</h2><span class="limit-badge" data-badge="c-short">0 / 80</span></div>
+        <textarea id="c-short" rows="3" placeholder="Type your short description…"></textarea>
+        <div class="bar"><div class="bar-fill" data-bar="c-short"></div></div>
+        <div class="count-row" data-for="c-short" data-limit="80"></div>
+      </div>
+      <div class="panel limit-panel">
+        <div class="limit-head"><h2>Long description</h2><span class="limit-badge" data-badge="c-long">0 / 4000</span></div>
+        <textarea id="c-long" rows="10" placeholder="Type or paste your long description…"></textarea>
+        <div class="bar"><div class="bar-fill" data-bar="c-long"></div></div>
+        <div class="count-row" data-for="c-long" data-limit="4000"></div>
+        <div class="btn-row">
+          <button class="btn" data-copy="c-long">Copy long description</button>
+          <button class="btn" id="c-save-back">Save back to selected app</button>
+          <span class="muted" id="c-msg"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>General text counter</h2>
+        <textarea id="c-any" rows="5" placeholder="Paste any text here — like CharacterCountOnline…"></textarea>
+        <div class="cards stats-6">
+          <div class="stat-card small"><div class="stat-num" id="g-chars">0</div><div class="stat-label">Characters</div></div>
+          <div class="stat-card small"><div class="stat-num" id="g-nospace">0</div><div class="stat-label">No spaces</div></div>
+          <div class="stat-card small"><div class="stat-num" id="g-words">0</div><div class="stat-label">Words</div></div>
+          <div class="stat-card small"><div class="stat-num" id="g-sent">0</div><div class="stat-label">Sentences</div></div>
+          <div class="stat-card small"><div class="stat-num" id="g-para">0</div><div class="stat-label">Paragraphs</div></div>
+          <div class="stat-card small"><div class="stat-num" id="g-spaces">0</div><div class="stat-label">Spaces</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-box">
+    <div class="modal-head"><h3 id="modal-title"></h3><button class="btn" id="modal-close">✕</button></div>
+    <pre id="modal-body"></pre>
+    <div class="btn-row"><button class="btn" id="modal-copy">Copy text</button></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
