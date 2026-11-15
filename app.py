@@ -149,6 +149,10 @@ def extract_keywords(competitors, seed_text, my_text):
 def home():
     return send_from_directory("templates", "index.html")
 
+@app.route("/api/ping")
+def ping():
+    return jsonify({"ok": True})
+
 # ---------------- Competitor research ----------------
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
@@ -308,6 +312,12 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
 
 @app.route("/api/research", methods=["POST"])
 def research():
+    try:
+        return _research_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _research_impl():
     d = request.get_json(force=True)
     seed = (d.get("seed") or "").strip()
     app_name = (d.get("app_name") or "").strip()
@@ -355,6 +365,12 @@ def research():
 # ---------------- Re-extract from a chosen competitor subset ----------------
 @app.route("/api/extract", methods=["POST"])
 def extract():
+    try:
+        return _extract_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _extract_impl():
     """Rebuild keywords from exactly the competitors the owner kept ticked.
     Popularity/Difficulty stay the same LOCAL ESTIMATES as /api/research."""
     d = request.get_json(force=True)
