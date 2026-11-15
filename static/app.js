@@ -59,9 +59,31 @@ $("#c-any").addEventListener("input", e => {
 
 /* ---------- API helpers ---------- */
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) {} throw new Error(m); }
-  return r.json();
+  // The free host sleeps when idle and can take 1-2 minutes to wake. A waking
+  // server shows up as a non-JSON response (the host's wake page), a
+  // 502/503/504, or a failed fetch - retry those automatically for ~3 minutes
+  // instead of surfacing a blank or confusing error.
+  const deadline = Date.now() + 3 * 60 * 1000;
+  for (;;) {
+    let r = null, data = null, isJson = false;
+    try {
+      r = await fetch(path, opts);
+      try { data = JSON.parse(await r.text()); isJson = true; } catch (e) { isJson = false; }
+    } catch (e) {
+      r = null; // network failure - the server may still be waking
+    }
+    if (r && isJson && r.ok) return data;
+    const waking = !r || !isJson || r.status === 502 || r.status === 503 || r.status === 504;
+    if (waking && Date.now() < deadline) {
+      const st = document.querySelector("#research-status");
+      if (st) st.textContent = "Server is waking up — this can take 1–2 minutes. Retrying automatically…";
+      await new Promise(res => setTimeout(res, 15000));
+      continue;
+    }
+    let m = (data && data.error) || (r && r.statusText) || "";
+    if (!m) m = "Server error (status " + (r ? r.status : 0) + ")";
+    throw new Error(m);
+  }
 }
 async function download(path, body) {
   const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -77,10 +99,89 @@ function copyText(t) { navigator.clipboard.writeText(t || ""); }
 /* ---------- My Apps ---------- */
 function loadApps() {
   try { APPS = JSON.parse(localStorage.getItem("rankrise_apps") || "[]"); } catch (e) { APPS = []; }
+  // Migrate the old single `graphic` field to the `graphics` list.
+  APPS.forEach(a => { if (!Array.isArray(a.graphics)) a.graphics = a.graphic ? [a.graphic] : []; });
   renderApps(); fillAppSelects(); updateStats();
 }
-function persistApps() { localStorage.setItem("rankrise_apps", JSON.stringify(APPS)); }
+function persistApps() {
+  try { localStorage.setItem("rankrise_apps", JSON.stringify(APPS)); return true; }
+  catch (e) { alert("Browser storage is full — remove some images or old apps and try again."); return false; }
+}
 function stampNow() { return new Date().toISOString().slice(0, 16).replace("T", " "); }
+
+/* ---------- feature graphics: multiple images, file pick or Ctrl+V paste ---------- */
+let FORM_GRAPHICS = []; // pending images for the app form, as dataURLs
+function compressImage(file) {
+  // Shrink to at most 1024x1024 and re-encode (JPEG 0.85; PNG only when the
+  // source appears to have transparency) so many images fit in localStorage.
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, 1024 / img.width, 1024 / img.height);
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      let hasAlpha = false;
+      try {
+        const px = ctx.getImageData(0, 0, w, h).data;
+        for (let i = 3; i < px.length; i += 4 * 211) { if (px[i] < 250) { hasAlpha = true; break; } }
+      } catch (e) { /* canvas readback unavailable - default to JPEG */ }
+      resolve(canvas.toDataURL(hasAlpha ? "image/png" : "image/jpeg", 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not read image")); };
+    img.src = url;
+  });
+}
+async function addGraphicImage(file) {
+  if (!file) return;
+  try {
+    FORM_GRAPHICS.push(await compressImage(file));
+    renderGraphicPreview();
+  } catch (e) { /* unreadable image - skip it */ }
+}
+function renderGraphicPreview() {
+  const box = $("#graphic-preview");
+  box.innerHTML = "";
+  FORM_GRAPHICS.forEach((src, i) => {
+    const wrap = document.createElement("span");
+    wrap.style.cssText = "display:inline-block;position:relative;margin:4px 10px 4px 0;vertical-align:top;text-align:center";
+    const img = document.createElement("img");
+    img.src = src;
+    img.style.cssText = "display:block;max-height:90px;max-width:180px;border-radius:6px";
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = "×"; btn.title = "Remove image";
+    btn.style.cssText = "position:absolute;top:-7px;right:-7px;width:20px;height:20px;border-radius:50%;border:none;background:#e5484d;color:#fff;cursor:pointer;line-height:1;font-size:14px;padding:0";
+    btn.onclick = () => { FORM_GRAPHICS.splice(i, 1); renderGraphicPreview(); };
+    wrap.appendChild(img); wrap.appendChild(btn);
+    if (i === 0) {
+      const cap = document.createElement("div");
+      cap.className = "muted"; cap.textContent = "Feature graphic";
+      cap.style.cssText = "font-size:11px;margin-top:2px";
+      wrap.appendChild(cap);
+    }
+    box.appendChild(wrap);
+  });
+}
+const graphicInput = $("#f-graphic");
+graphicInput.multiple = true;
+graphicInput.addEventListener("change", () => {
+  [...graphicInput.files].forEach(addGraphicImage);
+  graphicInput.value = ""; // allow picking the same file again later
+});
+document.addEventListener("paste", e => {
+  const view = $("#view-apps");
+  if (!view || !view.classList.contains("active")) return;
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const imgs = [];
+  for (const it of items) if (it.type && it.type.indexOf("image/") === 0) { const f = it.getAsFile(); if (f) imgs.push(f); }
+  if (imgs.length) { e.preventDefault(); imgs.forEach(addGraphicImage); }
+});
+
 function appCard(a, target) {
   const div = document.createElement("div");
   div.className = "app-card";
@@ -123,44 +224,34 @@ function fillForm(a) {
   $("#f-id").value = a.id; $("#f-name").value = a.name || ""; $("#f-package").value = a.package || "";
   $("#f-seed").value = a.seed || ""; $("#f-country").value = a.country || "US";
   setVal("f-title", a.title); setVal("f-short", a.short_desc); setVal("f-long", a.long_desc);
-  $("#graphic-preview").innerHTML = a.graphic ? `<img src="${a.graphic}"><div class="muted">${a.graphic_info || ""}</div>` : "";
+  FORM_GRAPHICS = (Array.isArray(a.graphics) && a.graphics.length) ? [...a.graphics] : (a.graphic ? [a.graphic] : []);
+  renderGraphicPreview();
   $("#app-form-title").textContent = "Editing: " + a.name;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $("#clear-form").onclick = () => {
   $("#f-id").value = ""; $("#f-name").value = ""; $("#f-package").value = ""; $("#f-seed").value = "";
   setVal("f-title", ""); setVal("f-short", ""); setVal("f-long", "");
-  $("#f-graphic").value = ""; $("#graphic-preview").innerHTML = ""; $("#app-form-title").textContent = "Add / edit app";
+  $("#f-graphic").value = ""; FORM_GRAPHICS = []; renderGraphicPreview(); $("#app-form-title").textContent = "Add / edit app";
 };
 $("#save-app").onclick = () => {
   const data = { name: $("#f-name").value, package: $("#f-package").value, seed: $("#f-seed").value,
     country: $("#f-country").value, title: $("#f-title").value, short_desc: $("#f-short").value, long_desc: $("#f-long").value };
   if (!data.name.trim()) { alert("App name is required"); return; }
   const id = $("#f-id").value || ("app" + Date.now().toString(36));
-  const file = $("#f-graphic").files[0];
-  const finish = (graphic, info) => {
-    const existing = APPS.find(x => x.id === id);
-    const item = Object.assign({}, existing || {}, data, { id, updated: stampNow() });
-    if (graphic !== null) { item.graphic = graphic; item.graphic_info = info; }
-    if (existing) APPS = APPS.map(x => x.id === id ? item : x); else APPS.unshift(item);
-    try { persistApps(); } catch (e) { alert("Browser storage is full — please try a smaller or compressed feature graphic"); return; }
-    $("#f-id").value = id;
-    $("#graphic-preview").innerHTML = item.graphic ? `<img src="${item.graphic}"><div class="muted">${item.graphic_info || ""}</div>` : "";
-    $("#save-msg").textContent = "Saved \u2713 " + (item.graphic_info || "");
-    $("#f-graphic").value = "";
-    $("#app-form-title").textContent = "Editing: " + item.name;
-    renderApps(); fillAppSelects(); updateStats();
-  };
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => finish(reader.result, img.width + " x " + img.height + "px" + ((img.width === 1024 && img.height === 500) ? " - correct size (1024 x 500)" : " - Play Store size should be 1024 x 500"));
-      img.onerror = () => finish(reader.result, "saved");
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  } else finish(null, "");
+  const existing = APPS.find(x => x.id === id);
+  const item = Object.assign({}, existing || {}, data, { id, updated: stampNow() });
+  item.graphics = [...FORM_GRAPHICS];
+  item.graphic = FORM_GRAPHICS[0] || ""; // first image stays the thumbnail / feature graphic
+  item.graphic_info = FORM_GRAPHICS.length ? FORM_GRAPHICS.length + (FORM_GRAPHICS.length === 1 ? " image" : " images") : "";
+  if (existing) APPS = APPS.map(x => x.id === id ? item : x); else APPS.unshift(item);
+  if (!persistApps()) return; // persistApps alerts when browser storage is full
+  $("#f-id").value = id;
+  renderGraphicPreview();
+  $("#save-msg").textContent = "Saved \u2713 " + (item.graphic_info || "");
+  $("#f-graphic").value = "";
+  $("#app-form-title").textContent = "Editing: " + item.name;
+  renderApps(); fillAppSelects(); updateStats();
 };
 
 /* ---------- Research ---------- */
@@ -332,3 +423,8 @@ function updateStats() {
 (async function init() {
   loadApps();
 })();
+
+/* ---------- keep-alive: ping the server so the free container stays
+   awake while this tab is open (it sleeps after ~15 min idle) ---------- */
+fetch("/api/ping").catch(() => {});
+setInterval(() => { fetch("/api/ping").catch(() => {}); }, 10 * 60 * 1000);
