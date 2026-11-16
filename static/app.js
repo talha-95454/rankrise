@@ -198,7 +198,7 @@ function appCard(a, target) {
       </div>
     </div>`;
   div.querySelector("h3").textContent = a.name;
-  div.querySelector(".seed-line").textContent = (a.country || "US") + (a.seed ? " • Seed: " + a.seed : "");
+  div.querySelector(".seed-line").textContent = (a.country || "US") + (a.seed ? " • Seed: " + a.seed : "") + (a.pkg ? " • 📦 " + a.pkg : "");
   div.querySelector(".t").textContent = (a.title || "—") + ` (${(a.title || "").length}/30)`;
   div.querySelector('[data-act="edit"]').onclick = () => fillForm(a);
   div.querySelector('[data-act="del"]').onclick = () => { if (confirm("Delete " + a.name + "?")) { APPS = APPS.filter(x => x.id !== a.id); persistApps(); loadApps(); } };
@@ -224,6 +224,7 @@ function fillAppSelects() {
 }
 function fillForm(a) {
   $("#f-id").value = a.id; $("#f-name").value = a.name || ""; $("#f-package").value = a.package || "";
+  $("#app-pkg").value = a.pkg || a.package || "";
   $("#f-seed").value = a.seed || ""; $("#f-country").value = a.country || "US";
   setVal("f-title", a.title); setVal("f-short", a.short_desc); setVal("f-long", a.long_desc);
   FORM_GRAPHICS = (Array.isArray(a.graphics) && a.graphics.length) ? [...a.graphics] : (a.graphic ? [a.graphic] : []);
@@ -232,12 +233,13 @@ function fillForm(a) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $("#clear-form").onclick = () => {
-  $("#f-id").value = ""; $("#f-name").value = ""; $("#f-package").value = ""; $("#f-seed").value = "";
+  $("#f-id").value = ""; $("#f-name").value = ""; $("#f-package").value = ""; $("#app-pkg").value = ""; $("#f-seed").value = "";
   setVal("f-title", ""); setVal("f-short", ""); setVal("f-long", "");
   $("#f-graphic").value = ""; FORM_GRAPHICS = []; renderGraphicPreview(); $("#app-form-title").textContent = "Add / edit app";
 };
 $("#save-app").onclick = () => {
-  const data = { name: $("#f-name").value, package: $("#f-package").value, seed: $("#f-seed").value,
+  const pkgVal = $("#app-pkg").value.trim();
+  const data = { name: $("#f-name").value, package: pkgVal || $("#f-package").value, pkg: pkgVal, seed: $("#f-seed").value,
     country: $("#f-country").value, title: $("#f-title").value, short_desc: $("#f-short").value, long_desc: $("#f-long").value };
   if (!data.name.trim()) { alert("App name is required"); return; }
   const id = $("#f-id").value || ("app" + Date.now().toString(36));
@@ -267,7 +269,19 @@ $("#r-app").addEventListener("change", e => {
   const a = APPS.find(x => x.id === e.target.value);
   if (a) selectResearchApp(a); else RESEARCH_MY = null;
 });
-$("#run-research").onclick = async () => {
+function loadAppPkgMap() {
+  try { return JSON.parse(localStorage.getItem("rr_app_pkg") || "{}"); } catch (e) { return {}; }
+}
+function resolveResearchAppId(my, override) {
+  // A package ID pins the research to exactly the owner's app. Priority:
+  // an explicit pick (target picker) > the saved app's Package ID > a
+  // package remembered for this app name by an earlier picker choice.
+  if (override) return override;
+  if (!my) return "";
+  if (my.pkg) return my.pkg;
+  return loadAppPkgMap()[(my.name || "").toLowerCase()] || "";
+}
+async function doResearch(appIdOverride) {
   const seed = $("#r-seed").value.trim();
   const my = RESEARCH_MY;
   const appName = my ? (my.name || "") : "";
@@ -276,12 +290,18 @@ $("#run-research").onclick = async () => {
   $("#research-status").textContent = "Fetching competitors from Play Store… (this can take 30–60 seconds)";
   $("#run-research").disabled = true;
   try {
+    const body = { seed, app_name: appName, extra_seeds: extra, country: $("#r-country").value, count: +$("#r-count").value,
+      my_text: my ? (my.title + " " + my.short_desc + " " + my.long_desc) : "" };
+    const appId = resolveResearchAppId(my, appIdOverride);
+    if (appId) body.app_id = appId;
     RESEARCH = await api("/api/research", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed, app_name: appName, extra_seeds: extra, country: $("#r-country").value, count: +$("#r-count").value,
-        my_text: my ? (my.title + " " + my.short_desc + " " + my.long_desc) : "" }) });
+      body: JSON.stringify(body) });
     let doneMsg = "Done ✓ — " + RESEARCH.competitors.length + " competitors, " + RESEARCH.keywords.length + " keywords";
     if (RESEARCH.dropped && (RESEARCH.dropped.competitors || RESEARCH.dropped.keywords)) {
       doneMsg += " Filtered out " + (RESEARCH.dropped.competitors || 0) + " off-topic apps and " + (RESEARCH.dropped.keywords || 0) + " unrelated keywords.";
+    }
+    if (RESEARCH.target_ambiguous) {
+      doneMsg += " Several apps share this name — pick YOUR app in the strip above the results so the numbers are exactly yours.";
     }
     $("#research-status").textContent = doneMsg;
     renderResearch();
@@ -291,10 +311,83 @@ $("#run-research").onclick = async () => {
     $("#research-status").textContent = "Error: " + e.message;
   }
   $("#run-research").disabled = false;
-};
+}
+$("#run-research").onclick = () => doResearch("");
+
+/* ---------- Accuracy update: same-name target picker ---------- */
+function renderTargetPicker() {
+  const panel = $("#target-picker");
+  if (!panel) return;
+  const cands = (RESEARCH && RESEARCH.target_candidates) || [];
+  if (!RESEARCH || cands.length < 2) { panel.classList.add("hidden"); panel.innerHTML = ""; return; }
+  panel.classList.remove("hidden");
+  panel.innerHTML = "";
+  const chosenId = (RESEARCH.target || {}).appId || "";
+  const buildButtons = (box) => {
+    cands.forEach(c => {
+      const btn = document.createElement("button");
+      btn.className = "cand-btn";
+      if (c.icon) { const img = document.createElement("img"); img.src = c.icon; img.alt = ""; btn.appendChild(img); }
+      const mid = document.createElement("span");
+      const t = document.createElement("div"); t.textContent = c.title || c.appId;
+      const d = document.createElement("div"); d.className = "cb-dev"; d.textContent = c.developer || "";
+      mid.appendChild(t); mid.appendChild(d);
+      btn.appendChild(mid);
+      const meta = document.createElement("span");
+      meta.className = "cb-meta";
+      meta.textContent = (c.installs || "") + (c.score ? " · ★ " + (+c.score).toFixed(1) : "") + (c.appId === chosenId ? " · current pick" : "");
+      btn.appendChild(meta);
+      btn.onclick = () => chooseCandidate(c);
+      box.appendChild(btn);
+    });
+  };
+  if (RESEARCH.target_ambiguous) {
+    const h = document.createElement("h2");
+    h.textContent = "⚠ Several apps share this name — pick YOUR app:";
+    panel.appendChild(h);
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "The results below were calculated against the biggest app with this name. Pick your own app and the research re-runs against exactly your app.";
+    panel.appendChild(p);
+    buildButtons(panel);
+  } else {
+    const td = RESEARCH.target_details || {};
+    const line = document.createElement("p");
+    line.style.margin = "0";
+    const dev = (RESEARCH.target || {}).developer || td.developer || "";
+    line.innerHTML = "Identified your app as: <b></b>";
+    line.querySelector("b").textContent = dev + (td.installs ? " · " + td.installs + " installs" : "");
+    const ch = document.createElement("button");
+    ch.className = "btn small";
+    ch.style.marginLeft = "10px";
+    ch.textContent = "Wrong app? Change";
+    line.appendChild(ch);
+    panel.appendChild(line);
+    const box = document.createElement("div");
+    box.className = "hidden";
+    panel.appendChild(box);
+    buildButtons(box);
+    ch.onclick = () => box.classList.toggle("hidden");
+  }
+}
+function chooseCandidate(c) {
+  const my = RESEARCH_MY;
+  if (my) {
+    my.pkg = c.appId;
+    const saved = APPS.find(x => x.id === my.id);
+    if (saved) saved.pkg = c.appId;
+    persistApps(); renderApps(); fillAppSelects();
+  } else if (RESEARCH && RESEARCH.target) {
+    const map = loadAppPkgMap();
+    map[(RESEARCH.target.title || "").toLowerCase()] = c.appId;
+    try { localStorage.setItem("rr_app_pkg", JSON.stringify(map)); } catch (e) { /* storage full - the re-run below still uses the pick */ }
+  }
+  doResearch(c.appId);
+}
 function renderResearch() {
   if (!RESEARCH) return;
   updateStats();
+  renderTargetPicker();
   $("#comp-panel").classList.remove("hidden");
   $("#kw-panel").classList.remove("hidden");
   $("#comp-count").textContent = RESEARCH.competitors.length + " apps";
@@ -544,7 +637,20 @@ function rankChange(prev, cur) {
 }
 $("#rank-app").addEventListener("change", e => {
   const a = APPS.find(x => x.id === e.target.value);
-  if (a && a.package) $("#rank-package").value = a.package;
+  if (!a) return;
+  // Pre-fill the package ID from the saved app's Package ID; failing that,
+  // from the last research target recorded for this app's name (Tracker
+  // data), or a package remembered by an earlier target-picker choice.
+  let pkg = a.pkg || a.package || "";
+  if (!pkg) {
+    try {
+      const tr = loadTracker();
+      const hit = Object.values(tr).find(en => (en.appName || "").toLowerCase() === (a.name || "").toLowerCase());
+      if (hit && hit.target && hit.target.appId) pkg = hit.target.appId;
+    } catch (err) { /* tracker unreadable - fall through */ }
+  }
+  if (!pkg) pkg = loadAppPkgMap()[(a.name || "").toLowerCase()] || "";
+  if (pkg) $("#rank-package").value = pkg;
 });
 $("#rank-use-best").onclick = () => {
   if (!RESEARCH || !RESEARCH.keywords || !RESEARCH.keywords.length) {
@@ -559,8 +665,8 @@ $("#rank-use-best").onclick = () => {
 $("#rank-check").onclick = async () => {
   const selApp = APPS.find(x => x.id === $("#rank-app").value);
   let appId = $("#rank-package").value.trim();
-  if (selApp && selApp.package) appId = selApp.package.trim();
-  if (!appId) { alert("Choose a saved app that has a package name, or type the package ID"); return; }
+  if (!appId && selApp) appId = (selApp.pkg || selApp.package || "").trim();
+  if (!appId) { alert("Choose a saved app that has a package ID, or type the package ID"); return; }
   const keywords = $("#rank-keywords").value.split("\n").map(s => s.trim()).filter(Boolean).slice(0, 10);
   if (!keywords.length) { alert("Enter at least one keyword — one per line"); return; }
   const btn = $("#rank-check");
