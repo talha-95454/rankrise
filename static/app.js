@@ -262,6 +262,7 @@ $("#save-app").onclick = () => {
 function selectResearchApp(a) {
   $("#r-app").value = a.id; $("#r-seed").value = a.seed || a.title || "";
   $("#r-country").value = a.country || "US";
+  $("#r-count").value = "50"; // app mode: pull every competitor that can be found
   RESEARCH_MY = a;
 }
 let RESEARCH_MY = null;
@@ -297,6 +298,9 @@ async function doResearch(appIdOverride) {
     RESEARCH = await api("/api/research", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
     let doneMsg = "Done ✓ — " + RESEARCH.competitors.length + " competitors, " + RESEARCH.keywords.length + " keywords";
+    if (RESEARCH.keywords_total_unique && RESEARCH.keywords_total_unique > RESEARCH.keywords.length) {
+      doneMsg += " (" + RESEARCH.keywords_total_unique + " unique keywords found — showing the top " + RESEARCH.keywords.length + ")";
+    }
     if (RESEARCH.dropped && (RESEARCH.dropped.competitors || RESEARCH.dropped.keywords)) {
       doneMsg += " Filtered out " + (RESEARCH.dropped.competitors || 0) + " off-topic apps and " + (RESEARCH.dropped.keywords || 0) + " unrelated keywords.";
     }
@@ -419,7 +423,9 @@ function renderResearch() {
 }
 function renderKeywords() {
   if (!RESEARCH) return;
-  $("#kw-count").textContent = RESEARCH.keywords.length + " keywords";
+  $("#kw-count").textContent = RESEARCH.keywords.length + " keywords" +
+    (RESEARCH.keywords_total_unique && RESEARCH.keywords_total_unique > RESEARCH.keywords.length
+      ? " of " + RESEARCH.keywords_total_unique + " unique found" : "");
   const kb = $("#kw-table tbody"); kb.innerHTML = "";
   RESEARCH.keywords.forEach((k, i) => {
     const tr = document.createElement("tr");
@@ -465,6 +471,7 @@ $("#reextract").onclick = async () => {
         target_text: RESEARCH.target_text || "",
         my_text: RESEARCH.target_text || (my ? (my.title + " " + my.short_desc + " " + my.long_desc) : "") }) });
     RESEARCH.keywords = data.keywords || [];
+    RESEARCH.keywords_total_unique = data.keywords_total_unique;
     renderKeywords();
     updateStats();
     let doneMsg = "Done ✓ — keywords rebuilt from " + selected.length + " selected competitors: " + RESEARCH.keywords.length + " keywords";
@@ -564,6 +571,13 @@ function instNum(x) {
   if (x.realInstalls) return +x.realInstalls;
   return parseInt(String(x.installs || "0").replace(/[^0-9]/g, ""), 10) || 0;
 }
+function fiveStarPct(x) {
+  const h = x && x.histogram;
+  if (!Array.isArray(h) || h.length < 5) return "–";
+  const tot = h.reduce((a, b) => a + (+b || 0), 0);
+  if (!tot) return "–";
+  return Math.round((+h[4] || 0) / tot * 100) + "%";
+}
 function fmtUpdated(v) {
   if (v === null || v === undefined || v === "") return "";
   let d;
@@ -595,6 +609,8 @@ function renderCompare() {
       x.installs || "—",
       x.score ? (+x.score).toFixed(1) : "",
       x.ratings ? (+x.ratings).toLocaleString("en-US") : "0",
+      x.reviews ? (+x.reviews).toLocaleString("en-US") : "0",
+      fiveStarPct(x),
       x.title_len != null ? x.title_len : (x.title || "").length,
       x.short_len != null ? x.short_len : "",
       x.long_len != null ? x.long_len : "",
@@ -699,9 +715,83 @@ $("#rank-check").onclick = async () => {
     });
     persistRankHistory(hist);
     $("#rank-table-wrap").classList.remove("hidden");
+    renderRankSerps(data.results || [], appId);
     $("#rank-status").textContent = "Done ✓ — ranks checked for " + (data.results || []).length + " keywords";
   } catch (e) {
     $("#rank-status").textContent = "Error: " + e.message;
+  }
+  btn.disabled = false;
+};
+
+/* ---------- AppTweak pack: SERP preview under the Rank Checker ---------- */
+function renderRankSerps(results, ownId) {
+  const box = $("#rank-serps");
+  if (!box) return;
+  box.innerHTML = "";
+  results.forEach(r => {
+    const tops = r.top_results || [];
+    if (!tops.length) return;
+    const h = document.createElement("h3");
+    h.style.margin = "18px 0 6px";
+    h.textContent = "Top 10 right now — “" + r.keyword + "”";
+    box.appendChild(h);
+    const strip = document.createElement("div");
+    strip.className = "serp-strip";
+    tops.forEach((a, i) => {
+      const el = document.createElement("div");
+      el.className = "serp-app" + (a.appId === ownId ? " own" : "");
+      if (a.icon) { const img = document.createElement("img"); img.src = a.icon; img.alt = ""; el.appendChild(img); }
+      const tx = document.createElement("div");
+      const t1 = document.createElement("div");
+      t1.className = "serp-title";
+      t1.textContent = (i + 1) + ". " + (a.title || a.appId);
+      const t2 = document.createElement("div");
+      t2.className = "serp-meta";
+      t2.textContent = (a.installs || "") + (a.score ? " · ★ " + (+a.score).toFixed(1) : "") + (a.appId === ownId ? " · YOUR APP" : "");
+      tx.appendChild(t1); tx.appendChild(t2);
+      el.appendChild(tx);
+      strip.appendChild(el);
+    });
+    box.appendChild(strip);
+  });
+}
+
+/* ---------- AppTweak pack: latest reviews of the owner's app ---------- */
+$("#reviews-load").onclick = async () => {
+  const appId = (RESEARCH_MY && (RESEARCH_MY.pkg || RESEARCH_MY.package)) ||
+    (RESEARCH && RESEARCH.target_details && RESEARCH.target_details.appId) ||
+    (RESEARCH && RESEARCH.target && RESEARCH.target.appId) || "";
+  if (!appId) { $("#reviews-status").textContent = "Run research for one of your apps first."; return; }
+  const btn = $("#reviews-load");
+  btn.disabled = true;
+  $("#reviews-status").textContent = "Loading reviews…";
+  try {
+    const d = await api("/api/reviews", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_id: appId, country: (RESEARCH && RESEARCH.country) || "US" }) });
+    const box = $("#reviews-list");
+    box.innerHTML = "";
+    const revs = d.reviews || [];
+    if (!revs.length) box.innerHTML = '<p class="muted">No reviews found for this app yet.</p>';
+    revs.forEach(r => {
+      const div = document.createElement("div");
+      div.className = "review-item";
+      const head = document.createElement("div");
+      head.className = "review-head";
+      const n = Math.max(0, Math.min(5, Math.round(r.rating || 0)));
+      head.textContent = (r.author || "Anonymous") + " · " + "★".repeat(n) + "☆".repeat(5 - n) +
+        (r.date ? " · " + String(r.date).slice(0, 10) : "");
+      div.appendChild(head);
+      if (r.text) {
+        const p = document.createElement("p");
+        p.className = "review-text";
+        p.textContent = r.text;
+        div.appendChild(p);
+      }
+      box.appendChild(div);
+    });
+    $("#reviews-status").textContent = "Done ✓ — " + revs.length + " latest reviews";
+  } catch (e) {
+    $("#reviews-status").textContent = "Error: " + e.message;
   }
   btn.disabled = false;
 };
@@ -790,6 +880,58 @@ $("#audit-close").onclick = () => $("#audit-panel").classList.add("hidden");
 function loadTracker() {
   try { return JSON.parse(localStorage.getItem("rr_tracker") || "{}"); } catch (e) { return {}; }
 }
+/* ---------- AppTweak pack: tracker change badges (vs previous snapshot) ---------- */
+function snapOf(x) {
+  if (!x) return null;
+  return {
+    installs: x.installs || "",
+    score: x.score || 0,
+    ratings: x.ratings || 0,
+    title: x.title || "",
+    short_len: x.short_len != null ? x.short_len : (x.summary || "").length,
+    long_len: x.long_len != null ? x.long_len : (x.description || "").length,
+  };
+}
+function diffChips(prev, cur) {
+  const out = [];
+  if (!prev || !cur) return out;
+  if (prev.score && cur.score && Math.abs(prev.score - cur.score) >= 0.005) {
+    out.push({ text: "★ " + (+prev.score).toFixed(2) + " → " + (+cur.score).toFixed(2), cls: cur.score > prev.score ? "diff-up" : "diff-down" });
+  }
+  if ((prev.ratings || 0) !== (cur.ratings || 0)) {
+    out.push({ text: "Ratings " + (prev.ratings || 0).toLocaleString("en-US") + " → " + (cur.ratings || 0).toLocaleString("en-US"), cls: (cur.ratings || 0) > (prev.ratings || 0) ? "diff-up" : "diff-down" });
+  }
+  if (prev.installs && cur.installs && prev.installs !== cur.installs) {
+    out.push({ text: "Installs " + prev.installs + " → " + cur.installs, cls: "diff-note" });
+  }
+  if ((prev.title || "") !== (cur.title || "")) {
+    out.push({ text: "Title changed", cls: "diff-note" });
+  }
+  if ((prev.short_len || 0) !== (cur.short_len || 0)) {
+    out.push({ text: "Short desc " + (prev.short_len || 0) + " → " + (cur.short_len || 0) + " chars", cls: "diff-note" });
+  }
+  if ((prev.long_len || 0) !== (cur.long_len || 0)) {
+    out.push({ text: "Long desc " + (prev.long_len || 0) + " → " + (cur.long_len || 0) + " chars", cls: "diff-note" });
+  }
+  return out;
+}
+function renderDiffs(box, prev, cur) {
+  const ds = diffChips(prev, cur);
+  if (!ds.length) return;
+  const line = document.createElement("div");
+  line.className = "diff-line";
+  const lab = document.createElement("span");
+  lab.className = "diff-label";
+  lab.textContent = "Since last research:";
+  line.appendChild(lab);
+  ds.forEach(d => {
+    const s = document.createElement("span");
+    s.className = "diff-chip " + d.cls;
+    s.textContent = d.text;
+    line.appendChild(s);
+  });
+  box.appendChild(line);
+}
 function saveTracker() {
   // App mode only: keep the full competitor set (copy, keywords, graphics,
   // screenshots) plus the untapped ideas for the Tracker page. Storage can
@@ -798,6 +940,15 @@ function saveTracker() {
   if (!RESEARCH || !RESEARCH.target || !RESEARCH.target.appId || !RESEARCH.target_details) return;
   try {
     const all = loadTracker();
+    // Keep the previous snapshot's key numbers so the Tracker can show
+    // what changed since the last research (badges). First-time tracking
+    // has no prev, so no badges are shown.
+    const old = all[RESEARCH.target.appId];
+    let prev = null;
+    if (old) {
+      prev = { target: snapOf(old.target), competitors: {} };
+      (old.competitors || []).forEach(c => { if (c.appId) prev.competitors[c.appId] = snapOf(c); });
+    }
     all[RESEARCH.target.appId] = {
       ts: Date.now(),
       appName: RESEARCH.target.title || (RESEARCH_MY || {}).name || "",
@@ -805,6 +956,7 @@ function saveTracker() {
       target: RESEARCH.target_details,
       competitors: RESEARCH.competitors || [],
       untapped: RESEARCH.untapped || [],
+      prev: prev,
     };
     localStorage.setItem("rr_tracker", JSON.stringify(all));
   } catch (e) { /* storage full - tracker data just won't persist */ }
@@ -833,6 +985,7 @@ function renderTracker() {
   sel.value = TRACKER_APP;
   const entry = all[TRACKER_APP];
   renderTrackerTarget(entry);
+  renderTrackerCategory(entry);
   renderTrackerUntapped(entry);
   renderTrackerCards(entry);
 }
@@ -863,8 +1016,10 @@ function renderTrackerTarget(entry) {
   chip("Installs", t.installs);
   chip("Rating", t.score ? (+t.score).toFixed(2) : "");
   chip("Ratings", t.ratings ? (+t.ratings).toLocaleString("en-US") : "");
+  chip("Category", t.genre);
   chip("Updated", fmtUpdated(t.updated));
   box.appendChild(meta);
+  renderDiffs(box, entry.prev && entry.prev.target, snapOf(t));
 }
 function renderTrackerUntapped(entry) {
   const box = $("#t-untapped");
@@ -967,6 +1122,7 @@ function renderTrackerCards(entry) {
     link.textContent = "Open in Play Store ↗";
     meta.appendChild(link);
     body.appendChild(meta);
+    renderDiffs(body, entry.prev && entry.prev.competitors && entry.prev.competitors[c.appId], snapOf(c));
     const addText = (label, text, clamp) => {
       if (!text) return;
       const lab = document.createElement("div");
@@ -1027,6 +1183,78 @@ function renderTrackerCards(entry) {
     box.appendChild(card);
   });
 }
+/* ---------- AppTweak pack: category top chart (Tracker view) ---------- */
+function renderTrackerCategory(entry) {
+  const list = $("#t-cat-list");
+  if (list) list.innerHTML = "";
+  const badge = $("#t-cat-count");
+  if (badge) badge.textContent = "";
+  const st = $("#t-cat-status");
+  if (st) st.textContent = "";
+  const note = $("#t-cat-note");
+  const t = (entry && entry.target) || {};
+  if (note) {
+    note.textContent = t.genre
+      ? "The current top free apps in this app's Play Store category (" + t.genre + ") — a live chart, fetched only when you ask."
+      : "Run Keyword Research for this app again to record its Play Store category, then this chart can load.";
+  }
+}
+$("#t-cat-load").onclick = async () => {
+  const entry = loadTracker()[TRACKER_APP];
+  if (!entry) return;
+  const status = $("#t-cat-status");
+  const genreId = (entry.target || {}).genreId || "";
+  if (!genreId) { status.textContent = "No category recorded for this app yet — re-run its research first."; return; }
+  const btn = $("#t-cat-load");
+  btn.disabled = true;
+  status.textContent = "Loading the category chart…";
+  try {
+    const d = await api("/api/category_top", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ genreId, country: entry.country || "US" }) });
+    const box = $("#t-cat-list");
+    box.innerHTML = "";
+    if (d.unavailable) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = d.unavailable;
+      box.appendChild(p);
+      status.textContent = "";
+      btn.disabled = false;
+      return;
+    }
+    const apps = d.apps || [];
+    $("#t-cat-count").textContent = apps.length + " apps";
+    apps.forEach((a, i) => {
+      const row = document.createElement("div");
+      row.className = "cat-row";
+      const rk = document.createElement("span");
+      rk.className = "cat-rank";
+      rk.textContent = "#" + (i + 1);
+      row.appendChild(rk);
+      if (a.icon) { const img = document.createElement("img"); img.src = a.icon; img.alt = ""; row.appendChild(img); }
+      const tx = document.createElement("div");
+      const t1 = document.createElement("div");
+      t1.style.fontWeight = "600";
+      t1.textContent = a.title || a.appId;
+      const t2 = document.createElement("div");
+      t2.className = "muted";
+      t2.style.fontSize = "12.5px";
+      t2.textContent = a.developer || "";
+      tx.appendChild(t1); tx.appendChild(t2);
+      row.appendChild(tx);
+      const meta = document.createElement("span");
+      meta.className = "cat-meta";
+      meta.textContent = (a.installs || "") + (a.score ? " · ★ " + (+a.score).toFixed(1) : "");
+      row.appendChild(meta);
+      box.appendChild(row);
+    });
+    status.textContent = "Done ✓";
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+  }
+  btn.disabled = false;
+};
+
 const trackerNavBtn = document.querySelector('[data-view="tracker"]');
 if (trackerNavBtn) trackerNavBtn.addEventListener("click", renderTracker);
 $("#t-app").addEventListener("change", e => { TRACKER_APP = e.target.value; renderTracker(); });
