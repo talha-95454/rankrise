@@ -111,7 +111,7 @@ def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=Fa
         fields = [("title", 5, a.get("title") or ""), ("summary", 3, a.get("summary") or ""), ("desc", 1, a.get("description") or "")]
         seen = set()
         for field, weight, text in fields:
-            for n in (1, 2, 3):
+            for n in (1, 2, 3, 4):
                 for g in ngrams(text, n):
                     toks = set(g.replace(":", "").split())
                     if len(g) < 3:
@@ -137,10 +137,14 @@ def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=Fa
         n_words = len(g.split())
         if n_words == 3 and app_count < 3 and title_count == 0:
             relevant = False
+        if n_words == 4 and app_count < 3 and title_count == 0:
+            relevant = False
         if n_words == 2 and app_count < 2 and title_count == 0 and not (toks & core):
             relevant = False
         if strict and len(s["ts_apps"]) >= 2:
             relevant = True  # rule (b): appears in titles/short descriptions of 2+ competitors
+        if strict and (toks & core_terms):
+            relevant = True  # rule (a): contains a core term of the target app
         if not relevant:
             continue
         # --- local popularity estimate (0-100) ---
@@ -157,7 +161,11 @@ def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=Fa
         difficulty = round(title_ratio * 45 + strength * 40 + min(15, app_count))
         difficulty = max(2, min(96, difficulty))
         score = s["weighted"] + app_count * 4 + title_count * 6
-        if score < 14 and title_count == 0:
+        # Seed mode keeps a quality floor (it has no relevance gate). App
+        # mode does not need one: the strict related check below is the
+        # gate, and the owner wants EVERY qualifying keyword extracted so
+        # he can check them all himself.
+        if not strict and score < 14 and title_count == 0:
             continue
         if strict:
             # Blocklist first: a generic single word is always dropped in app
@@ -198,9 +206,10 @@ def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=Fa
         })
     if stats_out is not None:
         stats_out["keywords"] = dropped_kw
+        stats_out["total_unique"] = len(rows)
     rows.sort(key=lambda r: (-r["popularity"], -r["in_titles"], -len(r["keyword"].split()), -r["mentions"]))
     mark_best(rows)
-    return rows[:500]
+    return rows[:1000]
 
 # ---------------- pages ----------------
 @app.route("/")
@@ -323,6 +332,8 @@ def fetch_details(hits, lang, country, gp_app):
             "realInstalls": det.get("realInstalls") or 0,
             "score": det.get("score") or h.get("score") or 0,
             "ratings": det.get("ratings") or 0,
+            "reviews": det.get("reviews") or 0,
+            "histogram": det.get("histogram") or None,
             "developer": det.get("developer") or "",
             "title_len": len(title),
             "short_len": len(summary),
@@ -536,6 +547,53 @@ def build_untapped(competitors, own_text, core_terms, phrases):
         add(g, "your-unique")
     return out[:30]
 
+def extra_pool_queries(ordered_words, phrases, seed_text, lang, country, must_contain=None):
+    """Extra Play Store searches that widen the competitor pool, so more
+    real competitors - and therefore more real keywords - are found.
+    First choice: the library's search suggestions for the app's core
+    words / the seed phrase, when the installed library provides them
+    (some builds are trimmed and have no suggest API at all - then this
+    falls back gracefully). Fallback: ordered pairs of the core words
+    that are not already search phrases ('hair prank' from the title
+    'Hair Clipper Prank'). Bounded: at most 8 queries are returned."""
+    queries = []
+    have = set(phrases)
+    try:
+        from google_play_scraper import suggest as gp_suggest
+    except Exception:
+        gp_suggest = None
+    if gp_suggest is not None:
+        seeds = []
+        for t in list(ordered_words)[:3] + ([seed_text] if seed_text else []):
+            t = (t or "").strip()
+            if t and t not in seeds:
+                seeds.append(t)
+        for t in seeds:
+            try:
+                sugs = gp_suggest(t, lang=lang, country=country) or []
+            except Exception:
+                sugs = []
+            for s in sugs:
+                term = s.get("term") if isinstance(s, dict) else s
+                term = re.sub(r"\s+", " ", (term or "").strip().lower())
+                if not term or term in have or term in queries:
+                    continue
+                if must_contain is not None and not (set(term.split()) & must_contain):
+                    continue
+                queries.append(term)
+            if len(queries) >= 8:
+                break
+        return queries[:8]
+    words = [w for w in ordered_words if len(w) > 2]
+    for i in range(len(words)):
+        for j in range(i + 1, len(words)):
+            q = words[i] + " " + words[j]
+            if q not in have and q not in queries:
+                queries.append(q)
+        if len(queries) >= 6:
+            break
+    return queries[:6]
+
 def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app, app_id=""):
     """Accuracy mode: find the owner's app, then research THAT app's own competitors.
     Target identification, in priority order: (1) an explicit package ID is
@@ -605,12 +663,17 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
             "realInstalls": src.get("realInstalls") or 0,
             "score": src.get("score") or 0,
             "ratings": src.get("ratings") or 0,
+            "reviews": src.get("reviews") or 0,
+            "histogram": src.get("histogram") or None,
+            "genre": src.get("genre") or "",
+            "genreId": src.get("genreId") or "",
             "title_len": len(t_title),
             "short_len": len(t_summary),
             "long_len": len(t_desc),
             "updated": src.get("updated") or "",
             "version": src.get("version") or "",
         }
+    core_terms, phrases = derive_core_terms(target_title)
     pool, seen = [], set()
     if target_id:
         seen.add(target_id)  # the owner's own app is never its own competitor
@@ -624,7 +687,20 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
             if aid and aid not in seen:
                 seen.add(aid)
                 pool.append(h)
-    core_terms, phrases = derive_core_terms(target_title)
+    # Widen the pool further (suggestions / core-word pairs) - every extra
+    # relevant competitor found here means more real keywords extracted.
+    ordered_core = [tok for tok in tokens(target_title) if tok in core_terms]
+    for q in extra_pool_queries(ordered_core, phrases, target_title, lang, country,
+                                must_contain=core_terms):
+        try:
+            hits = gp_search(q, lang=lang, country=country, n_hits=30)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if aid and aid not in seen:
+                seen.add(aid)
+                pool.append(h)
     norm_phrases = []
     for p in phrases:
         pn = normalize_title(p)
@@ -656,6 +732,7 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
     untapped = build_untapped(competitors, own_text, core_terms, phrases)
     payload = {"seed": seed or target_title, "country": country.upper(), "created": now(),
                "competitors": competitors, "keywords": keywords, "untapped": untapped,
+               "keywords_total_unique": kw_stats.get("total_unique", len(keywords)),
                "dropped": {"competitors": dropped_comp, "keywords": kw_stats.get("keywords", 0)},
                "target_text": own_text or "",
                "target_details": target_details,
@@ -711,13 +788,27 @@ def _research_impl():
             if aid and aid not in seen:
                 seen.add(aid)
                 results.append(h)
+    # Widen the pool with suggestion / word-pair searches for the seed too.
+    seed_words = [t for t in tokens(seed) if t not in STOP and len(t) > 2]
+    for q in extra_pool_queries(seed_words, [seed] + extra_seeds, seed, lang, country):
+        try:
+            hits = gp_search(q, lang=lang, country=country, n_hits=n)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if aid and aid not in seen:
+                seen.add(aid)
+                results.append(h)
     competitors = fetch_details(results[:n], lang, country, gp_app)
     if not competitors:
         return jsonify({"error": "No competitor apps found. Check the seed keyword / internet and try again."}), 404
-    keywords = extract_keywords(competitors, seed + " " + " ".join(extra_seeds), my_text)
+    kw_stats = {}
+    keywords = extract_keywords(competitors, seed + " " + " ".join(extra_seeds), my_text, stats_out=kw_stats)
     payload = {"seed": seed, "country": country.upper(), "created": now(),
                "competitors": competitors, "keywords": keywords,
-               "dropped": {"competitors": 0, "keywords": 0}}
+               "keywords_total_unique": kw_stats.get("total_unique", len(keywords)),
+               "dropped": {"competitors": 0, "keywords": kw_stats.get("keywords", 0)}}
     return jsonify(payload)
 
 # ---------------- Re-extract from a chosen competitor subset ----------------
@@ -755,9 +846,13 @@ def _extract_impl():
         kw_stats = {}
         keywords = extract_keywords(comps, d.get("seed") or "", own_text,
                                     core_terms=core_terms, strict=True, stats_out=kw_stats)
-        return jsonify({"keywords": keywords, "dropped": {"keywords": kw_stats.get("keywords", 0)}})
-    keywords = extract_keywords(comps, d.get("seed") or "", own_text)
-    return jsonify({"keywords": keywords})
+        return jsonify({"keywords": keywords,
+                        "keywords_total_unique": kw_stats.get("total_unique", len(keywords)),
+                        "dropped": {"keywords": kw_stats.get("keywords", 0)}})
+    kw_stats = {}
+    keywords = extract_keywords(comps, d.get("seed") or "", own_text, stats_out=kw_stats)
+    return jsonify({"keywords": keywords,
+                    "keywords_total_unique": kw_stats.get("total_unique", len(keywords))})
 
 # ---------------- Keyword Rank Checker ----------------
 @app.route("/api/rank", methods=["POST"])
@@ -802,6 +897,14 @@ def _rank_impl():
             "rank": rank_pos,
             "scanned": len(hits),
             "top_app": (hits[0].get("title") if hits else "") or "",
+            "top_results": [{
+                "appId": h.get("appId") or "",
+                "title": h.get("title") or "",
+                "developer": h.get("developer") or "",
+                "icon": h.get("icon") or "",
+                "installs": h.get("installs") or "",
+                "score": h.get("score") or 0,
+            } for h in hits[:10]],
         })
     return jsonify({"results": results})
 
@@ -837,6 +940,91 @@ def _untapped_check_impl():
     level = "low" if top_installs < 100000 else ("medium" if top_installs < 1000000 else "high")
     return jsonify({"keyword": keyword, "apps_found": len(hits),
                     "top_installs": top_installs, "level": level})
+
+# ---------------- Latest reviews of the owner's app ----------------
+@app.route("/api/reviews", methods=["POST"])
+def app_reviews():
+    try:
+        return _reviews_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _reviews_impl():
+    """The most recent Play Store reviews of the owner's own app (a single
+    page, newest first). Fetched only when the owner asks for them - never
+    as part of a research run."""
+    d = request.get_json(force=True)
+    app_id = (d.get("app_id") or "").strip()
+    if not app_id:
+        return jsonify({"error": "app_id (package name) is required"}), 400
+    country = (d.get("country") or "US").strip().lower()
+    lang = (d.get("lang") or "en").strip()
+    try:
+        from google_play_scraper import reviews as gp_reviews, Sort as GpSort
+    except Exception as e:
+        return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
+    try:
+        found, _tok = gp_reviews(app_id, lang=lang, country=country,
+                                 sort=GpSort.NEWEST, count=8)
+    except Exception as e:
+        return jsonify({"error": f"Could not fetch reviews: {e}"}), 500
+    out = []
+    for r in (found or [])[:8]:
+        at = r.get("at")
+        out.append({
+            "author": r.get("userName") or "",
+            "rating": r.get("score"),
+            "date": at.isoformat() if hasattr(at, "isoformat") else (str(at) if at else ""),
+            "text": (r.get("text") or r.get("content") or "")[:300],
+        })
+    return jsonify({"reviews": out})
+
+# ---------------- Category top chart ----------------
+@app.route("/api/category_top", methods=["POST"])
+def category_top():
+    try:
+        return _category_top_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _category_top_impl():
+    """Top free apps in a Play Store category, via the library's chart
+    (list) API. Some installed library builds are trimmed and have no
+    chart API at all; in that case this reports the feature as unavailable
+    instead of inventing a chart."""
+    d = request.get_json(force=True)
+    genre_id = (d.get("genreId") or d.get("genre_id") or "").strip()
+    if not genre_id:
+        return jsonify({"error": "genreId is required"}), 400
+    country = (d.get("country") or "US").strip().lower()
+    lang = (d.get("lang") or "en").strip()
+    try:
+        from google_play_scraper import list as gp_list
+        from google_play_scraper.constants.google_play import Collection, Category
+    except Exception:
+        return jsonify({"apps": [], "unavailable": "Category charts are not supported by the Play Store library installed on this server, so the chart cannot be loaded here."})
+    cat = getattr(Category, genre_id, None)
+    if cat is None:
+        return jsonify({"apps": [], "unavailable": f"Unknown Play Store category '{genre_id}'."})
+    try:
+        hits = gp_list(collection=Collection.TOP_FREE, category=cat,
+                       lang=lang, country=country, n_hits=20)
+    except TypeError:
+        try:
+            hits = gp_list(Collection.TOP_FREE, cat, lang=lang, country=country)
+        except Exception as e:
+            return jsonify({"error": f"Could not fetch the category chart: {e}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"Could not fetch the category chart: {e}"}), 500
+    apps = [{
+        "appId": h.get("appId") or "",
+        "title": h.get("title") or "",
+        "developer": h.get("developer") or "",
+        "icon": h.get("icon") or "",
+        "installs": h.get("installs") or "",
+        "score": h.get("score") or 0,
+    } for h in (hits or [])[:20]]
+    return jsonify({"apps": apps})
 
 # ---------------- Sheets ----------------
 def sheet_rows(body):
