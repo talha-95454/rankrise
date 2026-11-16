@@ -200,7 +200,7 @@ def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=Fa
         stats_out["keywords"] = dropped_kw
     rows.sort(key=lambda r: (-r["popularity"], -r["in_titles"], -len(r["keyword"].split()), -r["mentions"]))
     mark_best(rows)
-    return rows[:250]
+    return rows[:500]
 
 # ---------------- pages ----------------
 @app.route("/")
@@ -234,7 +234,10 @@ def title_similarity(a, b):
 def derive_title_phrases(title):
     """Build Play Store search phrases from an app title, year tokens stripped.
     'Lie Detector Test - Prank 2026' -> ['lie detector test prank', 'lie detector test',
-    'lie detector prank', ...]."""
+    'lie detector prank', ...]. Also includes every contiguous 2- and 3-word
+    window of the title ('hair clipper', 'clipper prank'): a single-segment
+    title otherwise yields only its full phrase, and a niche's biggest apps
+    often rank under the shorter windows, never under the full phrase."""
     no_year = YEAR_RE.sub(" ", title or "")
     segments = re.split(r"[-:|/–—]+", no_year)
     seg_words = []
@@ -259,6 +262,10 @@ def derive_title_phrases(title):
             add(first + other)
             add(first[:2] + other)
             add(first[:3] + other)
+    # Contiguous 3- then 2-word windows of the whole title, left to right.
+    for size in (3, 2):
+        for i in range(len(all_words) - size + 1):
+            add(all_words[i:i + size])
     if not phrases and all_words:
         add(all_words)
     return phrases
@@ -328,10 +335,87 @@ def fetch_details(hits, lang, country, gp_app):
         competitors.append(comp)
     return competitors
 
-def find_target_app(gp_search, app_name, phrases, lang, country):
-    """Find the owner's own app on the Play Store by title.
-    Exact normalized-title match wins; otherwise the closest title match.
-    Returns the search hit dict, or None if nothing plausible is found."""
+def find_target_candidates(gp_search, app_name, phrases, lang, country):
+    """ALL apps whose normalized title exactly matches the requested name.
+    Several different apps can share one title ('Hair Clipper Prank' has at
+    least four, from different developers), so an exact title alone does NOT
+    identify the owner's app. Returns candidate dicts with the fields the
+    frontend picker shows."""
+    name_n = normalize_title(app_name)
+    out, seen = [], set()
+    for q in [app_name] + phrases[:2]:
+        try:
+            hits = gp_search(q, lang=lang, country=country, n_hits=30)
+        except Exception:
+            hits = []
+        for h in hits:
+            aid = h.get("appId")
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            if normalize_title(h.get("title") or "") == name_n:
+                out.append({
+                    "appId": aid,
+                    "title": h.get("title") or "",
+                    "developer": h.get("developer") or "",
+                    "installs": h.get("installs") or "",
+                    "realInstalls": h.get("realInstalls") or 0,
+                    "score": h.get("score") or 0,
+                    "icon": h.get("icon") or "",
+                    "summary": h.get("summary") or "",
+                })
+    return out
+
+def _candidate_score(cand, my_text):
+    """How likely an exact-title candidate is the owner's own app, judged
+    against the metadata the owner saved for it (my_text = their title +
+    short + long description). A candidate whose own short description
+    appears verbatim inside my_text is decisive - only the real app can
+    match that. Otherwise the token overlap between the candidate's
+    title+summary and my_text decides."""
+    if not my_text:
+        return 0
+    summary = cand.get("summary") or ""
+    if summary and _phrase_in(summary, _norm_blob(my_text)):
+        return 1000
+    cand_words = set(tokens((cand.get("title") or "") + " " + summary))
+    return len(cand_words & set(tokens(my_text)))
+
+def enrich_candidate_summaries(candidates, gp_app, lang, country):
+    """Search hits carry no short description in this scraper version (their
+    'summary' is empty; their 'description' is a long-description snippet),
+    so fetch each candidate's real summary from its store details. Without
+    it, same-title candidates are indistinguishable - they all share the
+    title, so title-only scoring always ties and the biggest app wins."""
+    for c in candidates:
+        if c.get("summary"):
+            continue
+        try:
+            det = gp_app(c["appId"], lang=lang, country=country)
+        except Exception:
+            det = None
+        if det:
+            c["summary"] = det.get("summary") or ""
+    return candidates
+
+def select_target(candidates, my_text):
+    """Pick among exact-title candidates. Returns (chosen, ambiguous).
+    A single candidate, or a clear my_text winner, is unambiguous; with no
+    clear winner the highest-installs candidate is used but flagged
+    ambiguous so the owner can correct it in the picker."""
+    if len(candidates) == 1:
+        return candidates[0], False
+    if my_text:
+        scored = sorted(candidates, key=lambda c: -_candidate_score(c, my_text))
+        top = _candidate_score(scored[0], my_text)
+        second = _candidate_score(scored[1], my_text)
+        if top > second and top > 0:
+            return scored[0], False
+    return sorted(candidates, key=lambda c: -parse_installs(c))[0], True
+
+def find_target_fuzzy(gp_search, app_name, phrases, lang, country):
+    """Fallback when no app carries the exact title: the closest title
+    match across the same searches, or None if nothing is plausible."""
     name_n = normalize_title(app_name)
     best, best_score = None, 0.0
     seen = set()
@@ -345,10 +429,7 @@ def find_target_app(gp_search, app_name, phrases, lang, country):
             if not aid or aid in seen:
                 continue
             seen.add(aid)
-            t_n = normalize_title(h.get("title") or "")
-            if t_n == name_n:
-                return h
-            s = title_similarity(name_n, t_n)
+            s = title_similarity(name_n, normalize_title(h.get("title") or ""))
             if s > best_score:
                 best, best_score = h, s
     return best if best_score >= 0.4 else None
@@ -455,10 +536,45 @@ def build_untapped(competitors, own_text, core_terms, phrases):
         add(g, "your-unique")
     return out[:30]
 
-def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app):
-    """Accuracy mode: find the owner's app, then research THAT app's own competitors."""
+def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app, app_id=""):
+    """Accuracy mode: find the owner's app, then research THAT app's own competitors.
+    Target identification, in priority order: (1) an explicit package ID is
+    fetched directly - the only identification that cannot land on a
+    same-named stranger's app; (2) among the apps that share the exact title,
+    the one whose own short description matches the owner's saved metadata;
+    (3) a single exact-title match; (4) the highest-installs exact match,
+    flagged ambiguous so the owner can pick theirs in the UI."""
     phrases = derive_title_phrases(app_name)
-    target_hit = find_target_app(gp_search, app_name, phrases, lang, country)
+    candidates = find_target_candidates(gp_search, app_name, phrases, lang, country)
+    # A literal title match (same words, same year, same punctuation - bar
+    # case) is a far stronger identity signal than a normalized one:
+    # 'Lie Detector Test - Prank 2026' is carried by exactly one app, while
+    # seven more share its normalized form with other years/punctuation.
+    # When any literal matches exist they become the candidate set; a
+    # single literal match identifies the app outright.
+    strict = [c for c in candidates
+              if (c.get("title") or "").strip().lower() == (app_name or "").strip().lower()]
+    if strict:
+        candidates = strict
+    ambiguous = False
+    target_hit = None
+    target_det = None
+    if app_id:
+        try:
+            target_det = gp_app(app_id, lang=lang, country=country)
+        except Exception:
+            target_det = None
+        if not target_det or not target_det.get("appId"):
+            return jsonify({"error": "Could not fetch the app with package ID '" + app_id + "'. Check the package ID and try again."}), 404
+        target_hit = {"appId": target_det.get("appId"),
+                      "title": target_det.get("title") or app_name,
+                      "developer": target_det.get("developer") or ""}
+    elif candidates:
+        if len(candidates) >= 2 and my_text:
+            enrich_candidate_summaries(candidates, gp_app, lang, country)
+        target_hit, ambiguous = select_target(candidates, my_text)
+    else:
+        target_hit = find_target_fuzzy(gp_search, app_name, phrases, lang, country)
     target_title = (target_hit or {}).get("title") or app_name
     if target_hit:
         phrases = derive_title_phrases(target_title) or phrases
@@ -468,10 +584,12 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
     target_text = ""
     target_details = None
     if target_hit and target_id:
-        try:
-            det = gp_app(target_id, lang=lang, country=country)
-        except Exception:
-            det = None
+        det = target_det
+        if det is None:
+            try:
+                det = gp_app(target_id, lang=lang, country=country)
+            except Exception:
+                det = None
         src = det or target_hit
         target_text = " ".join(x for x in [src.get("title") or "", src.get("summary") or "",
                                            src.get("description") or ""] if x)
@@ -507,15 +625,27 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
                 seen.add(aid)
                 pool.append(h)
     core_terms, phrases = derive_core_terms(target_title)
+    norm_phrases = []
+    for p in phrases:
+        pn = normalize_title(p)
+        if pn and len(pn.split()) >= 2:
+            norm_phrases.append(pn)
     kept, dropped_comp = [], 0
     for h in pool:
         rel = competitor_relevance(h.get("title") or "", core_terms, phrases)
         if rel <= 0:
             dropped_comp += 1  # off-topic: title shares no core term and no phrase
         else:
-            kept.append((rel, h))
-    kept.sort(key=lambda x: (-x[0], -parse_installs(x[1])))
-    competitors = fetch_details([h for _, h in kept[:n]], lang, country, gp_app)
+            # Sort keys: phrase-match tier first (the title literally
+            # contains one of the app's search phrases), then how many
+            # distinct core terms it carries, then installs - so the big
+            # relevant apps of the niche are never cut by the cap.
+            ct = normalize_title(h.get("title") or "")
+            tier = 1 if any(pn in ct for pn in norm_phrases) else 0
+            terms = len(set(ct.split()) & core_terms)
+            kept.append((tier, terms, h))
+    kept.sort(key=lambda x: (-x[0], -x[1], -parse_installs(x[2])))
+    competitors = fetch_details([h for _, _, h in kept[:n]], lang, country, gp_app)
     if not competitors:
         return jsonify({"error": "No competitor apps found. Check the app name / internet and try again."}), 404
     seed_text = " ".join(x for x in [seed, target_title, " ".join(phrases), " ".join(extra_seeds)] if x)
@@ -529,8 +659,11 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
                "dropped": {"competitors": dropped_comp, "keywords": kw_stats.get("keywords", 0)},
                "target_text": own_text or "",
                "target_details": target_details,
+               "target_ambiguous": bool(ambiguous),
                "target": {"title": target_title, "appId": target_id,
                           "developer": (target_hit or {}).get("developer") or ""} if target_hit else None}
+    if len(candidates) >= 2:
+        payload["target_candidates"] = candidates
     return jsonify(payload)
 
 @app.route("/api/research", methods=["POST"])
@@ -558,13 +691,14 @@ def _research_impl():
             n = 20
     n = max(5, min(50, n))
     my_text = d.get("my_text") or ""
+    app_id = (d.get("app_id") or "").strip()
     extra_seeds = [s.strip() for s in (d.get("extra_seeds") or []) if s.strip()]
     try:
         from google_play_scraper import search as gp_search, app as gp_app
     except Exception as e:
         return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
     if app_name:
-        return research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app)
+        return research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app, app_id=app_id)
 
     seen, results = set(), []
     for term in [seed] + extra_seeds:
