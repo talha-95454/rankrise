@@ -23,6 +23,11 @@ def now():
 # ---------------- keyword engine (all local, free) ----------------
 STOP = set("""the a an and or for to of in on with your you our it its is are be can will this that from as at by per all any no not just so do does use using used app apps free download get get more most best new 2024 2025 2026""".split())
 
+# Generic single words that are never useful ASO keywords on their own.
+# In strict (app) mode they are always dropped unless they are a core term
+# of the target app's title. Multi-word keywords are never blocklisted.
+BLOCKLIST = set("""disclaimer only help app use used using get one two way ways also just like make made new best top free pro hd 2024 2025 2026 features feature enjoy welcome thanks thank please note information experience world life daily today""".split())
+
 def clean(t):
     return re.sub(r"\s+", " ", (t or "").lower())
 
@@ -49,10 +54,30 @@ def parse_installs(a):
     except Exception:
         return 0
 
-def extract_keywords(competitors, seed_text, my_text):
+def mark_best(rows):
+    """Best-for-ASO score on every keyword + a 'best' flag on the top 20.
+    best_score rewards high popularity and low difficulty; GAP keywords
+    (missing from the owner's own app) get a +10 bonus."""
+    for r in rows:
+        r["best_score"] = round(r["popularity"] * (100 - r["difficulty"]) / 100) + (10 if r.get("gap") is True else 0)
+        r["best"] = False
+    for r in sorted(rows, key=lambda r: (-r["best_score"], -r["popularity"]))[:20]:
+        r["best"] = True
+    return rows
+
+def extract_keywords(competitors, seed_text, my_text, core_terms=None, strict=False, stats_out=None):
     """Local keyword extraction with estimate scores.
     Popularity/Difficulty here are LOCAL ESTIMATES from competitor behaviour,
-    not data from any paid tool."""
+    not data from any paid tool.
+    strict=True (app mode) additionally drops keywords unrelated to the target
+    app: a keyword is related when it contains a core term, appears in the
+    titles/short descriptions of 2+ competitors, is used by >= 1/3 of the
+    competitors anywhere (min 4 — e.g. "fingerprint scanner" lives in
+    descriptions, rarely in titles), or appears in the target's
+    own metadata. Generic single words (BLOCKLIST) are always dropped unless
+    they are core terms. stats_out, when given, receives {"keywords": dropped}."""
+    core_terms = set(core_terms or [])
+    dropped_kw = 0
     # --- gap detection: is a keyword ABSENT from the owner's own metadata? ---
     # my_text = the target app's own title + summary + description. When it is
     # empty (pure seed mode) gap stays None - never fabricated.
@@ -91,11 +116,13 @@ def extract_keywords(competitors, seed_text, my_text):
                     toks = set(g.replace(":", "").split())
                     if len(g) < 3:
                         continue
-                    s = stats.setdefault(g, {"keyword": g, "apps": set(), "title_apps": set(), "mentions": 0, "weighted": 0, "title_installs": []})
+                    s = stats.setdefault(g, {"keyword": g, "apps": set(), "title_apps": set(), "ts_apps": set(), "mentions": 0, "weighted": 0, "title_installs": []})
                     s["mentions"] += 1
                     s["weighted"] += weight
                     if g not in seen:
                         s["apps"].add(a.get("appId"))
+                    if field in ("title", "summary"):
+                        s["ts_apps"].add(a.get("appId"))
                     if field == "title":
                         s["title_apps"].add(a.get("appId"))
                         s["title_installs"].append(parse_installs(a))
@@ -112,6 +139,8 @@ def extract_keywords(competitors, seed_text, my_text):
             relevant = False
         if n_words == 2 and app_count < 2 and title_count == 0 and not (toks & core):
             relevant = False
+        if strict and len(s["ts_apps"]) >= 2:
+            relevant = True  # rule (b): appears in titles/short descriptions of 2+ competitors
         if not relevant:
             continue
         # --- local popularity estimate (0-100) ---
@@ -130,6 +159,32 @@ def extract_keywords(competitors, seed_text, my_text):
         score = s["weighted"] + app_count * 4 + title_count * 6
         if score < 14 and title_count == 0:
             continue
+        if strict:
+            # Blocklist first: a generic single word is always dropped in app
+            # mode unless it is one of the target app's own core terms.
+            gw = g.replace(":", "").strip()
+            if len(gw.split()) == 1 and gw in BLOCKLIST and gw not in core_terms:
+                dropped_kw += 1
+                continue
+            # Related = contains a core term, or shows up in the titles/short
+            # descriptions of 2+ selected competitors, or in the target's own text,
+            # or is used by >= 1/3 of competitors anywhere (min 4). That last
+            # rule rescues description-heavy keywords: "fingerprint scanner"
+            # appears in 21/30 Lie Detector competitors' descriptions but
+            # rarely in titles, so the old title/short-only rule dropped a
+            # top GAP keyword. A keyword used by a third of competitors is
+            # topic-related by definition — except a phrase containing a
+            # blocklisted word ("entertainment only if", "need help contact"),
+            # which is boilerplate, not a keyword. The blocklist check above
+            # still wins, so generic noise (disclaimer / only / help) stays out.
+            widespread = app_count >= max(4, total // 3) and not (toks & BLOCKLIST)
+            related = bool(toks & core_terms) or len(s["ts_apps"]) >= 2 or widespread
+            if not related and my_norm:
+                k_norm = re.sub(r"\s+", " ", gw.replace("-", " ").replace("/", " ")).strip()
+                related = (" " + k_norm + " ") in my_norm
+            if not related:
+                dropped_kw += 1
+                continue
         if title_count >= 3:
             use = "Title"
         elif app_count >= max(4, total // 3):
@@ -141,7 +196,10 @@ def extract_keywords(competitors, seed_text, my_text):
             "apps_count": app_count, "in_titles": title_count, "mentions": s["mentions"],
             "score": score, "suggested_use": use, "gap": is_gap(g),
         })
+    if stats_out is not None:
+        stats_out["keywords"] = dropped_kw
     rows.sort(key=lambda r: (-r["popularity"], -r["in_titles"], -len(r["keyword"].split()), -r["mentions"]))
+    mark_best(rows)
     return rows[:250]
 
 # ---------------- pages ----------------
@@ -205,6 +263,36 @@ def derive_title_phrases(title):
         add(all_words)
     return phrases
 
+def derive_core_terms(title):
+    """Core terms of a target app: the content words of its title (years and
+    numbers stripped, stopwords/generic words removed) plus its title phrases.
+    Returns (words_set, phrases_list)."""
+    no_year = YEAR_RE.sub(" ", title or "")
+    words = set()
+    for tok in tokens(no_year):
+        if tok in STOP or tok.isdigit() or len(tok) < 2:
+            continue
+        words.add(tok)
+    return words, derive_title_phrases(title)
+
+def competitor_keywords(comp):
+    """Top 15 keywords of ONE app, from its own title (weight 5), short
+    description (3) and long description (1) - the same tokens()/ngrams()
+    machinery as extract_keywords, but single-app, so no popularity or
+    difficulty. Generic single words (STOP / BLOCKLIST) are dropped."""
+    stats = {}
+    fields = [(5, comp.get("title") or ""), (3, comp.get("summary") or ""), (1, comp.get("description") or "")]
+    for weight, text in fields:
+        for n in (1, 2, 3):
+            for g in ngrams(text, n):
+                if len(g) < 3:
+                    continue
+                if n == 1 and (g in STOP or g in BLOCKLIST):
+                    continue
+                stats[g] = stats.get(g, 0) + weight
+    ranked = sorted(stats.items(), key=lambda kv: (-kv[1], -len(kv[0].split()), kv[0]))
+    return [g for g, _ in ranked[:15]]
+
 def fetch_details(hits, lang, country, gp_app):
     """Fetch full Play Store details for search hits -> competitor dicts."""
     competitors = []
@@ -213,19 +301,31 @@ def fetch_details(hits, lang, country, gp_app):
             det = gp_app(h["appId"], lang=lang, country=country)
         except Exception:
             det = h
-        competitors.append({
+        title = det.get("title") or h.get("title") or ""
+        summary = det.get("summary") or h.get("summary") or ""
+        description = det.get("description") or ""
+        comp = {
             "appId": det.get("appId") or h.get("appId"),
-            "title": det.get("title") or h.get("title") or "",
-            "summary": det.get("summary") or h.get("summary") or "",
-            "description": det.get("description") or "",
+            "title": title,
+            "summary": summary,
+            "description": description,
             "icon": det.get("icon") or h.get("icon") or "",
+            "header_image": det.get("headerImage") or "",
+            "screenshots": (det.get("screenshots") or [])[:3],
             "installs": det.get("installs") or h.get("installs") or "",
             "realInstalls": det.get("realInstalls") or 0,
             "score": det.get("score") or h.get("score") or 0,
             "ratings": det.get("ratings") or 0,
             "developer": det.get("developer") or "",
+            "title_len": len(title),
+            "short_len": len(summary),
+            "long_len": len(description),
+            "updated": det.get("updated") or "",
+            "version": det.get("version") or "",
             "url": det.get("url") or f"https://play.google.com/store/apps/details?id={h.get('appId')}",
-        })
+        }
+        comp["keywords"] = competitor_keywords(comp)
+        competitors.append(comp)
     return competitors
 
 def find_target_app(gp_search, app_name, phrases, lang, country):
@@ -263,6 +363,98 @@ def title_relevance(comp_title, core_words, phrases):
     score += 3 * len(set(tokens(ct)) & core_words)
     return score
 
+def competitor_relevance(comp_title, core_terms, phrases):
+    """Strict relevance of a candidate competitor to the target app.
+    A title-phrase match counts most, then the number of distinct core terms
+    in the competitor's title. 0 = no phrase and no core term (off-topic)."""
+    ct = normalize_title(comp_title)
+    if not ct:
+        return 0
+    score = 0
+    for p in phrases:
+        pn = normalize_title(p)
+        if pn and len(pn.split()) >= 2 and pn in ct:
+            score += 100 + 10 * len(pn.split())
+    score += 10 * len(set(ct.split()) & core_terms)
+    return score
+
+# ---------------- Untapped keyword suggester (app mode only) ----------------
+# Rule-based ideas for keywords NO competitor uses: phrases only the owner's
+# own app has, plus new combinations of its title phrases / core terms with
+# the modifiers below. There is deliberately no search-volume data behind
+# these - they are ideas to test, and /api/untapped_check shows how strong
+# the current top apps for a phrase are.
+UNTAPPED_MODIFIERS = ["simulator", "scanner", "test", "prank", "funny", "joke", "jokes", "real", "fake", "free", "pro", "hd", "online", "offline", "game", "games", "challenge", "party", "friends", "family", "voice", "sound", "touch", "shock", "electric", "ultimate", "master", "expert", "best", "top", "new", "2026", "detector", "truth", "dare"]
+
+def _norm_blob(t):
+    """Normalize text for phrase containment checks, in the same style as
+    the gap check in extract_keywords: lowercase, '-' '/' ':' become spaces,
+    whitespace collapsed, padded with spaces so matches are whole phrases."""
+    return " " + re.sub(r"\s+", " ", clean(t or "").replace("-", " ").replace("/", " ").replace(":", " ")) + " "
+
+def _phrase_in(phrase, blob):
+    p = re.sub(r"\s+", " ", (phrase or "").replace(":", "").replace("-", " ").replace("/", " ")).strip()
+    return bool(p) and (" " + p + " ") in blob
+
+def build_untapped(competitors, own_text, core_terms, phrases):
+    """Keyword ideas that appear in NO competitor's title/summary/description.
+    Ranked: title-phrase combos first, then core-word combos, then phrases
+    only the owner's own app uses ('your-unique'). Capped at 30."""
+    comp_blob = _norm_blob(" ".join(
+        " ".join(x for x in [c.get("title") or "", c.get("summary") or "", c.get("description") or ""] if x)
+        for c in competitors))
+    own_blob = _norm_blob(own_text)
+    out, seen = [], set()
+
+    def add(kw, source):
+        k = " ".join((kw or "").split()).strip()
+        if not k or k in seen:
+            return
+        seen.add(k)
+        out.append({"keyword": k, "source": source})
+
+    def combo_ok(cand):
+        # No blocklisted word, unless that word is one of the app's own core
+        # terms (e.g. a title that itself contains 'best' or 'test').
+        if any(w in BLOCKLIST and w not in core_terms for w in cand.split()):
+            return False
+        return not _phrase_in(cand, comp_blob) and not _phrase_in(cand, own_blob)
+
+    # (2a) combos from the title phrases - the full title phrase comes first
+    # in derive_title_phrases order; modifiers are the outer loop so the
+    # ideas spread across all the title's phrases instead of one phrase
+    # hogging the whole list.
+    phrase_bases = [p for p in phrases if len(p.split()) >= 2]
+    for m in UNTAPPED_MODIFIERS:
+        for base in phrase_bases:
+            if m in base.split():
+                continue
+            if combo_ok(base + " " + m):
+                add(base + " " + m, "combo")
+            if combo_ok(m + " " + base):
+                add(m + " " + base, "combo")
+    # (2b) combos from single core words
+    for m in UNTAPPED_MODIFIERS:
+        for core in sorted(core_terms):
+            if m == core:
+                continue
+            if combo_ok(core + " " + m):
+                add(core + " " + m, "combo")
+            if combo_ok(m + " " + core):
+                add(m + " " + core, "combo")
+    # (1) phrases only the owner's own app uses, most frequent first
+    counts = Counter()
+    for n in (2, 3):
+        for g in ngrams(own_text or "", n):
+            counts[g] += 1
+    for g, _cnt in counts.most_common():
+        if any(w in BLOCKLIST for w in g.split()):
+            continue
+        if _phrase_in(g, comp_blob):
+            continue
+        add(g, "your-unique")
+    return out[:30]
+
 def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_search, gp_app):
     """Accuracy mode: find the owner's app, then research THAT app's own competitors."""
     phrases = derive_title_phrases(app_name)
@@ -274,6 +466,7 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
     # The target app's OWN metadata (title + summary + description) from the
     # Play Store - this is what gap keywords are measured against.
     target_text = ""
+    target_details = None
     if target_hit and target_id:
         try:
             det = gp_app(target_id, lang=lang, country=country)
@@ -282,6 +475,24 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
         src = det or target_hit
         target_text = " ".join(x for x in [src.get("title") or "", src.get("summary") or "",
                                            src.get("description") or ""] if x)
+        t_title = src.get("title") or target_title
+        t_summary = src.get("summary") or ""
+        t_desc = src.get("description") or ""
+        target_details = {
+            "title": t_title,
+            "appId": target_id,
+            "header_image": src.get("headerImage") or "",
+            "developer": src.get("developer") or (target_hit.get("developer") or ""),
+            "installs": src.get("installs") or "",
+            "realInstalls": src.get("realInstalls") or 0,
+            "score": src.get("score") or 0,
+            "ratings": src.get("ratings") or 0,
+            "title_len": len(t_title),
+            "short_len": len(t_summary),
+            "long_len": len(t_desc),
+            "updated": src.get("updated") or "",
+            "version": src.get("version") or "",
+        }
     pool, seen = [], set()
     if target_id:
         seen.add(target_id)  # the owner's own app is never its own competitor
@@ -295,17 +506,29 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
             if aid and aid not in seen:
                 seen.add(aid)
                 pool.append(h)
-    core_words = set(t for t in tokens(target_title) if t not in STOP)
-    pool.sort(key=lambda h: (-title_relevance(h.get("title") or "", core_words, phrases), -parse_installs(h)))
-    competitors = fetch_details(pool[:n], lang, country, gp_app)
+    core_terms, phrases = derive_core_terms(target_title)
+    kept, dropped_comp = [], 0
+    for h in pool:
+        rel = competitor_relevance(h.get("title") or "", core_terms, phrases)
+        if rel <= 0:
+            dropped_comp += 1  # off-topic: title shares no core term and no phrase
+        else:
+            kept.append((rel, h))
+    kept.sort(key=lambda x: (-x[0], -parse_installs(x[1])))
+    competitors = fetch_details([h for _, h in kept[:n]], lang, country, gp_app)
     if not competitors:
         return jsonify({"error": "No competitor apps found. Check the app name / internet and try again."}), 404
     seed_text = " ".join(x for x in [seed, target_title, " ".join(phrases), " ".join(extra_seeds)] if x)
     own_text = target_text or my_text
-    keywords = extract_keywords(competitors, seed_text, own_text)
+    kw_stats = {}
+    keywords = extract_keywords(competitors, seed_text, own_text,
+                                core_terms=core_terms, strict=True, stats_out=kw_stats)
+    untapped = build_untapped(competitors, own_text, core_terms, phrases)
     payload = {"seed": seed or target_title, "country": country.upper(), "created": now(),
-               "competitors": competitors, "keywords": keywords,
+               "competitors": competitors, "keywords": keywords, "untapped": untapped,
+               "dropped": {"competitors": dropped_comp, "keywords": kw_stats.get("keywords", 0)},
                "target_text": own_text or "",
+               "target_details": target_details,
                "target": {"title": target_title, "appId": target_id,
                           "developer": (target_hit or {}).get("developer") or ""} if target_hit else None}
     return jsonify(payload)
@@ -359,7 +582,8 @@ def _research_impl():
         return jsonify({"error": "No competitor apps found. Check the seed keyword / internet and try again."}), 404
     keywords = extract_keywords(competitors, seed + " " + " ".join(extra_seeds), my_text)
     payload = {"seed": seed, "country": country.upper(), "created": now(),
-               "competitors": competitors, "keywords": keywords}
+               "competitors": competitors, "keywords": keywords,
+               "dropped": {"competitors": 0, "keywords": 0}}
     return jsonify(payload)
 
 # ---------------- Re-extract from a chosen competitor subset ----------------
@@ -388,8 +612,97 @@ def _extract_impl():
         })
     if not comps:
         return jsonify({"error": "No competitors provided"}), 400
-    keywords = extract_keywords(comps, d.get("seed") or "", d.get("my_text") or "")
+    app_title = (d.get("app_title") or "").strip()
+    own_text = d.get("target_text") or d.get("my_text") or ""
+    if app_title:
+        # App context given: keep only keywords related to that app and drop
+        # generic noise, exactly like app-mode research.
+        core_terms, _phrases = derive_core_terms(app_title)
+        kw_stats = {}
+        keywords = extract_keywords(comps, d.get("seed") or "", own_text,
+                                    core_terms=core_terms, strict=True, stats_out=kw_stats)
+        return jsonify({"keywords": keywords, "dropped": {"keywords": kw_stats.get("keywords", 0)}})
+    keywords = extract_keywords(comps, d.get("seed") or "", own_text)
     return jsonify({"keywords": keywords})
+
+# ---------------- Keyword Rank Checker ----------------
+@app.route("/api/rank", methods=["POST"])
+def rank():
+    try:
+        return _rank_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _rank_impl():
+    """For each keyword, run the same Play Store search the research uses and
+    report the 1-based position of the owner's app in the ordered results."""
+    d = request.get_json(force=True)
+    app_id = (d.get("app_id") or "").strip()
+    raw_kws = d.get("keywords") or []
+    if isinstance(raw_kws, str):
+        raw_kws = re.split(r"[\n,]+", raw_kws)
+    keywords = [k.strip() for k in raw_kws if isinstance(k, str) and k.strip()][:10]
+    if not app_id:
+        return jsonify({"error": "app_id (package name) is required"}), 400
+    if not keywords:
+        return jsonify({"error": "At least one keyword is required"}), 400
+    country = (d.get("country") or "US").strip().lower()
+    lang = (d.get("lang") or "en").strip()
+    try:
+        from google_play_scraper import search as gp_search
+    except Exception as e:
+        return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
+    results = []
+    for kw in keywords:
+        try:
+            hits = gp_search(kw, lang=lang, country=country, n_hits=50)
+        except Exception:
+            hits = []
+        rank_pos = None
+        for i, h in enumerate(hits):
+            if h.get("appId") == app_id:
+                rank_pos = i + 1
+                break
+        results.append({
+            "keyword": kw,
+            "rank": rank_pos,
+            "scanned": len(hits),
+            "top_app": (hits[0].get("title") if hits else "") or "",
+        })
+    return jsonify({"results": results})
+
+# ---------------- Untapped keyword competition check ----------------
+@app.route("/api/untapped_check", methods=["POST"])
+def untapped_check():
+    try:
+        return _untapped_check_impl()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def _untapped_check_impl():
+    """How strong is the competition for one untapped keyword idea? Looks at
+    the current top 3 Play Store results for the phrase: if even they are
+    small apps, the phrase is a low-competition bet."""
+    d = request.get_json(force=True)
+    keyword = (d.get("keyword") or "").strip()
+    if not keyword:
+        return jsonify({"error": "keyword is required"}), 400
+    country = (d.get("country") or "US").strip().lower()
+    lang = (d.get("lang") or "en").strip()
+    try:
+        from google_play_scraper import search as gp_search
+    except Exception as e:
+        return jsonify({"error": f"google-play-scraper not available: {e}"}), 500
+    try:
+        hits = gp_search(keyword, lang=lang, country=country, n_hits=10)
+    except Exception:
+        hits = []
+    top_installs = 0
+    for h in hits[:3]:
+        top_installs = max(top_installs, parse_installs(h))
+    level = "low" if top_installs < 100000 else ("medium" if top_installs < 1000000 else "high")
+    return jsonify({"keyword": keyword, "apps_found": len(hits),
+                    "top_installs": top_installs, "level": level})
 
 # ---------------- Sheets ----------------
 def sheet_rows(body):
