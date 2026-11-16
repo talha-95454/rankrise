@@ -10,6 +10,50 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
+<style>
+  /* Tools update: rank checker, ASO audit, competitor compare */
+  #compare-table tr.your-row td{background:rgba(47,123,255,.16);font-weight:600}
+  .rank-up{color:var(--ok);font-weight:700}
+  .rank-down{color:var(--danger);font-weight:700}
+  .rank-same{color:var(--muted);font-weight:600}
+  .score-head{display:flex;align-items:center;gap:18px;margin:8px 0 4px}
+  .score-num{font-family:var(--display);font-size:46px;font-weight:800;line-height:1;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .score-head .bar{flex:1;margin:0}
+  .audit-parts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+  .audit-part{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .audit-part .ap-num{font-size:19px;font-weight:800}
+  .audit-part .ap-label{color:var(--muted);font-size:12.5px;margin-top:2px}
+  #audit-suggestions{margin:6px 0 0;padding-left:20px;line-height:1.9}
+  /* Final update: Competitor Tracker page */
+  .t-banner{width:100%;max-height:170px;object-fit:cover;border-radius:12px;display:block;margin-top:12px}
+  .t-target-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  .t-target-meta h3{margin:0;font-size:19px}
+  .meta-chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:12.5px;color:var(--muted)}
+  .meta-chip b{color:var(--ink)}
+  .untapped-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid var(--line)}
+  .untapped-row:last-child{border-bottom:0}
+  .untapped-row .kw{font-weight:700;font-size:15px}
+  .src-tag{font-size:11px;font-weight:700;letter-spacing:.4px;border-radius:999px;padding:3px 9px;background:var(--panel2);border:1px solid var(--line2);color:var(--accent2)}
+  .lvl{font-weight:800}
+  .lvl-low{color:var(--ok)}
+  .lvl-medium{color:#f5b544}
+  .lvl-high{color:var(--danger)}
+  .tracker-card{background:var(--panel2);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:18px}
+  .tracker-card .tc-banner{width:100%;height:150px;object-fit:cover;display:block}
+  .tracker-body{padding:14px 16px 16px}
+  .tracker-head{display:flex;gap:12px;align-items:center}
+  .tracker-head img{width:46px;height:46px;border-radius:11px}
+  .tracker-head h3{margin:0;font-size:17px}
+  .tracker-head .dev{color:var(--muted);font-size:13px}
+  .tc-label{font-size:11.5px;font-weight:800;letter-spacing:.6px;color:var(--accent2);margin:14px 0 3px;text-transform:uppercase}
+  .tc-text{white-space:pre-wrap;word-break:break-word;line-height:1.55}
+  .clamp4{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+  .clamp4.open{display:block;-webkit-line-clamp:unset}
+  .kw-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .kw-chip{background:var(--panel3);border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12.5px}
+  .tc-shots{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .tc-shots img{height:130px;border-radius:9px;border:1px solid var(--line)}
+</style>
 </head>
 <body>
 <div class="layout">
@@ -25,6 +69,7 @@
       <button class="nav-btn active" data-view="dashboard">🏠 Dashboard</button>
       <button class="nav-btn" data-view="apps">📱 My Apps</button>
       <button class="nav-btn" data-view="research">🔎 Keyword Research</button>
+      <button class="nav-btn" data-view="tracker">🎯 Competitor Tracker</button>
       <button class="nav-btn" data-view="counter">🔢 Character Counter</button>
     </nav>
     <div class="side-note">
@@ -124,6 +169,18 @@
         <h2>Saved apps</h2>
         <div id="apps-list" class="app-grid"></div>
       </div>
+      <div class="panel hidden" id="audit-panel">
+        <h2 id="audit-title">ASO Score</h2>
+        <div class="score-head">
+          <div class="score-num" id="audit-score">0</div>
+          <div class="bar"><div class="bar-fill" id="audit-bar"></div></div>
+        </div>
+        <p class="muted" id="audit-note"></p>
+        <div class="audit-parts" id="audit-breakdown"></div>
+        <h3 style="margin:14px 0 4px">Suggestions</h3>
+        <ul id="audit-suggestions"></ul>
+        <div class="btn-row"><button class="btn" id="audit-close">Close</button></div>
+      </div>
     </section>
 
     <!-- RESEARCH -->
@@ -166,6 +223,38 @@
         <p class="muted">Popularity / Difficulty = local estimates from competitor data (free). Final sheet format = Country, Keyword, Popularity, Difficulty, Apps Count — sorted by Popularity, high to low, just like your AppKittie sheet.</p>
       </div>
 
+      <div class="panel" id="rank-panel">
+        <h2>Keyword Rank Checker</h2>
+        <p class="muted">Check where your app ranks on the Play Store for any keyword right now. Every check is saved in this browser, so you can see whether your rank went up or down since the last check.</p>
+        <div class="grid-2">
+          <label>Saved app
+            <select id="rank-app"><option value="">— choose saved app —</option></select>
+          </label>
+          <label>Package ID
+            <input id="rank-package" type="text" placeholder="e.g. com.example.app">
+          </label>
+          <label>Country
+            <select id="rank-country">
+              <option>US</option><option>GB</option><option>PK</option><option>IN</option>
+              <option>CA</option><option>AU</option><option>DE</option><option>FR</option>
+              <option>BR</option><option>ID</option><option>BD</option><option>AE</option>
+            </select>
+          </label>
+        </div>
+        <label>Keywords <span class="hint">(one per line, maximum 10)</span>
+          <textarea id="rank-keywords" rows="4" placeholder="lie detector&#10;lie detector test&#10;fingerprint scanner"></textarea>
+        </label>
+        <div class="btn-row">
+          <button class="btn primary" id="rank-check">📈 Check ranks</button>
+          <button class="btn" id="rank-use-best">Use best keywords from last research</button>
+          <span class="muted" id="rank-status"></span>
+        </div>
+        <div class="table-wrap hidden" id="rank-table-wrap"><table id="rank-table">
+          <thead><tr><th>Keyword</th><th>Your rank</th><th>Change</th><th>#1 app right now</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+
       <div class="panel hidden" id="comp-panel">
         <h2>Competitor apps <span class="badge" id="comp-count"></span></h2>
         <div class="btn-row">
@@ -178,6 +267,14 @@
           <thead><tr><th>✓</th><th>App</th><th>Title</th><th>Installs</th><th>Rating</th><th>Short description</th><th>Copy / View</th></tr></thead>
           <tbody></tbody>
         </table></div>
+        <div id="compare-wrap" class="hidden">
+          <h3 style="margin:20px 0 6px">Your app vs top competitors</h3>
+          <div class="table-wrap"><table id="compare-table">
+            <thead><tr><th>App</th><th>Installs</th><th>Rating</th><th>Ratings</th><th>Title (chars)</th><th>Short (chars)</th><th>Long (chars)</th><th>Updated</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <p class="muted" id="compare-insight"></p>
+        </div>
       </div>
 
       <div class="panel hidden" id="kw-panel">
@@ -185,16 +282,49 @@
         <div class="btn-row">
           <input id="kw-search" type="text" placeholder="Filter keywords…">
           <button class="btn" id="kw-gap-toggle">Gap keywords only</button>
+          <button class="btn" id="select-best">⭐ Select best keywords</button>
           <button class="btn" id="dl-all">⬇ All keywords sheet (CSV)</button>
           <button class="btn primary" id="dl-final-csv">⬇ Final sheet — CSV (ticked keywords)</button>
           <button class="btn primary" id="dl-final-xlsx">⬇ Final sheet — Excel (ticked keywords)</button>
         </div>
         <p class="muted">Top keywords are ticked automatically. Untick any you don't want, then download the final sheet and check it yourself. Keywords tagged <b>GAP</b> are used by your competitors but are missing from your own app's title and descriptions — use “Gap keywords only” to view just those.</p>
+        <p id="top-picks" style="font-weight:600;margin:10px 0 4px"></p>
         <div class="table-wrap"><table id="kw-table">
           <thead><tr><th>✓</th><th>Keyword</th><th>Gap</th><th>Popularity *</th><th>Difficulty *</th><th>Apps Count</th><th>In Titles</th><th>Mentions</th><th>Suggested use</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <p class="muted">* Local estimates from competitor data — free, not paid-tool data.</p>
+      </div>
+    </section>
+
+    <!-- COMPETITOR TRACKER -->
+    <section class="view" id="view-tracker">
+      <div class="page-head">
+        <span class="eyebrow">Watch your rivals</span>
+        <h1>Competitor Tracker</h1>
+        <p>Every competitor from your app research in one place — their full listing copy, their own top keywords, their feature graphic and screenshots — plus keyword ideas none of them are using yet.</p>
+      </div>
+      <div class="panel hidden" id="t-empty">
+        <h2>No tracked competitors yet</h2>
+        <p class="muted">Run Keyword Research for one of your saved apps first: go to Keyword Research, pick the app under “Use a saved app”, and run the research. Its competitors — and the untapped keyword ideas — will be saved here automatically.</p>
+        <div class="btn-row"><button class="btn primary" id="t-goto-research">🔎 Go to Keyword Research</button></div>
+      </div>
+      <div id="t-content" class="hidden">
+        <div class="panel">
+          <label>Tracked app
+            <select id="t-app"></select>
+          </label>
+          <div id="t-target"></div>
+        </div>
+        <div class="panel">
+          <h2>💡 Untapped keyword ideas <span class="badge" id="t-untapped-count"></span></h2>
+          <p class="muted">These are rule-based ideas — phrases only your own listing uses, and new combinations of your app's title phrases — that <b>none</b> of the tracked competitors are using. There is <b>no search-volume data</b> behind them, so use “Check competition” to see how strong the current top apps for a phrase are before betting a title slot on it.</p>
+          <div id="t-untapped"></div>
+        </div>
+        <div class="panel">
+          <h2>Competitor apps <span class="badge" id="t-comp-count"></span></h2>
+          <div id="t-cards"></div>
+        </div>
       </div>
     </section>
 
