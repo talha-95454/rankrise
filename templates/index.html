@@ -53,6 +53,12 @@
   .kw-chip{background:var(--panel3);border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12.5px}
   .tc-shots{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
   .tc-shots img{height:130px;border-radius:9px;border:1px solid var(--line)}
+  /* Accuracy update: same-name target picker */
+  .cand-btn{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:9px 12px;margin-top:8px;cursor:pointer;color:var(--ink);font:inherit}
+  .cand-btn:hover{border-color:var(--accent)}
+  .cand-btn img{width:36px;height:36px;border-radius:9px;flex:none}
+  .cand-btn .cb-dev{color:var(--muted);font-size:12.5px}
+  .cand-btn .cb-meta{margin-left:auto;color:var(--muted);font-size:12.5px;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -131,6 +137,9 @@
           </label>
           <label>Package name (optional)
             <input id="f-package" type="text" placeholder="e.g. com.example.app">
+          </label>
+          <label>Package ID <span class="hint">(optional)</span>
+            <input id="app-pkg" type="text" placeholder="Recommended — apps with the same name exist">
           </label>
           <label>Main seed keyword
             <input id="f-seed" type="text" placeholder="e.g. gps speedometer">
@@ -230,7 +239,7 @@
           <label>Saved app
             <select id="rank-app"><option value="">— choose saved app —</option></select>
           </label>
-          <label>Package ID
+          <label>Package ID <span class="hint">(Use the package ID — a name alone can match the wrong app.)</span>
             <input id="rank-package" type="text" placeholder="e.g. com.example.app">
           </label>
           <label>Country
@@ -254,6 +263,8 @@
           <tbody></tbody>
         </table></div>
       </div>
+
+      <div class="panel hidden" id="target-picker"></div>
 
       <div class="panel hidden" id="comp-panel">
         <h2>Competitor apps <span class="badge" id="comp-count"></span></h2>
