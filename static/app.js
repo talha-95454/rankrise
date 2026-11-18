@@ -962,6 +962,19 @@ function saveTracker() {
   } catch (e) { /* storage full - tracker data just won't persist */ }
 }
 let TRACKER_APP = "";
+function clearTrackedApp() {
+  // Remove the selected app's tracked data (target, competitors, untapped
+  // ideas and its prev snapshot) from this browser, so a finished app can
+  // be cleared before starting work on a new one.
+  const all = loadTracker();
+  if (!TRACKER_APP || !all[TRACKER_APP]) return;
+  const name = all[TRACKER_APP].appName || TRACKER_APP;
+  if (!confirm("Remove " + name + " and all its tracked competitors from this browser? This cannot be undone.")) return;
+  delete all[TRACKER_APP];
+  try { localStorage.setItem("rr_tracker", JSON.stringify(all)); } catch (e) { /* storage unavailable - nothing else to do */ }
+  TRACKER_APP = "";
+  renderTracker();
+}
 function renderTracker() {
   const all = loadTracker();
   const ids = Object.keys(all).sort((a, b) => (all[b].ts || 0) - (all[a].ts || 0));
@@ -983,6 +996,26 @@ function renderTracker() {
     sel.appendChild(o);
   });
   sel.value = TRACKER_APP;
+  // "Clear this app" button (created once, under the selector): lets the
+  // user drop a finished app's tracked data and start fresh on a new app.
+  // It lives inside #t-content, which renderTracker hides when no app is
+  // tracked, so it only ever shows alongside a selected tracked app.
+  let clearBtn = $("#t-clear-app");
+  if (!clearBtn) {
+    clearBtn = document.createElement("button");
+    clearBtn.id = "t-clear-app";
+    clearBtn.className = "btn small";
+    clearBtn.type = "button";
+    clearBtn.textContent = "🗑 Clear this app";
+    clearBtn.addEventListener("click", clearTrackedApp);
+    const row = document.createElement("div");
+    row.className = "btn-row";
+    row.appendChild(clearBtn);
+    const lab = sel.closest("label");
+    if (lab && lab.parentNode) lab.parentNode.insertBefore(row, lab.nextSibling);
+    else sel.parentNode.appendChild(row);
+  }
+  clearBtn.disabled = !all[TRACKER_APP];
   const entry = all[TRACKER_APP];
   renderTrackerTarget(entry);
   renderTrackerCategory(entry);
