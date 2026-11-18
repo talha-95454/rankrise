@@ -470,6 +470,16 @@ def competitor_relevance(comp_title, core_terms, phrases):
     score += 10 * len(set(ct.split()) & core_terms)
     return score
 
+def niche_words(text, limit=12):
+    """Most frequent content words of the owner's own listing (title +
+    short + long description). A real competitor's own top keywords share
+    several of these; a generic app that only matched one title word
+    (e.g. a plain 'Calculator') shares almost none of them."""
+    counts = Counter(w for w in tokens(text)
+                     if len(w) > 2 and w not in STOP and w not in BLOCKLIST)
+    return set(w for w, _ in counts.most_common(limit))
+
+
 # ---------------- Untapped keyword suggester (app mode only) ----------------
 # Rule-based ideas for keywords NO competitor uses: phrases only the owner's
 # own app has, plus new combinations of its title phrases / core terms with
@@ -724,6 +734,29 @@ def research_by_app(app_name, seed, extra_seeds, country, lang, n, my_text, gp_s
     competitors = fetch_details([h for _, _, h in kept[:n]], lang, country, gp_app)
     if not competitors:
         return jsonify({"error": "No competitor apps found. Check the app name / internet and try again."}), 404
+    # Description-level relevance: drop apps that only matched one generic
+    # title word. A plain 'Calculator' shares the word 'calculator' with
+    # 'Ovulation Tracker & Calculator' but almost none of the niche words
+    # the owner's own listing repeats most - while real period apps share
+    # several, even when their titles use 'period'/'cycle' instead of
+    # 'ovulation'. Title-phrase matches and two-core-term titles are kept
+    # outright, so apps with very short descriptions are never dropped here.
+    niche = niche_words(target_text)
+    _filtered, _dropped_desc = [], 0
+    for _comp in competitors:
+        _ct = normalize_title(_comp.get("title") or "")
+        _tier = 1 if any(_pn in _ct for _pn in norm_phrases) else 0
+        _terms = len(set(_ct.split()) & core_terms)
+        _kw_words = set()
+        for _k in _comp.get("keywords") or []:
+            _kw_words.update(_k.split())
+        if _tier == 1 or _terms >= 2 or len(_kw_words & niche) >= 3:
+            _filtered.append(_comp)
+        else:
+            _dropped_desc += 1
+    if _filtered:  # never empty the list on a filtering surprise
+        competitors = _filtered
+        dropped_comp += _dropped_desc
     seed_text = " ".join(x for x in [seed, target_title, " ".join(phrases), " ".join(extra_seeds)] if x)
     own_text = target_text or my_text
     kw_stats = {}
